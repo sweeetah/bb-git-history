@@ -89,41 +89,40 @@ export const repositorySelectionSchema = z
   })
   .strict();
 
-const threadHistoryInputSchema = z
+const threadRepositorySchema = z
   .object({
     threadId: z.string().min(1),
+    repositoryKey: z.string().min(1).max(16_384).optional(),
+  })
+  .strict();
+
+const threadHistoryInputSchema = threadRepositorySchema.extend({
     offset: z.number().int().nonnegative(),
     limit: z.number().int().min(1).max(400),
-  })
-  .strict();
+  });
 
-const threadCommitInputSchema = z
-  .object({
-    threadId: z.string().min(1),
+const threadCommitInputSchema = threadRepositorySchema.extend({
     hash: z.string().min(4).max(128),
-  })
-  .strict();
+  });
 
-const threadWorkingTreeInputSchema = z
-  .object({
-    threadId: z.string().min(1),
+const threadWorkingTreeInputSchema = threadRepositorySchema.extend({
     path: z.string().min(1).max(16_384),
-  })
-  .strict();
-
-const threadInputSchema = z
-  .object({
-    threadId: z.string().min(1),
-  })
-  .strict();
+  });
 
 export const rpcContract = defineRpcContract({
+  repositories: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({
+      repositories: z.array(repositoryDescriptorSchema),
+      unavailableReason: z.string().nullable(),
+    }).strict(),
+  },
   history: {
     input: threadHistoryInputSchema,
     output: historyPageSchema,
   },
   historyRevision: {
-    input: threadInputSchema,
+    input: threadRepositorySchema,
     output: historyRevisionSchema,
   },
   details: {

@@ -10,6 +10,16 @@ interface RepositoryTarget {
 
 class RepositoryUnavailableError extends Error {}
 
+function repositoryInput(
+  target: RepositoryTarget,
+  repositoryKey: string | undefined,
+) {
+  return {
+    environmentPath: target.environmentPath,
+    ...(repositoryKey === undefined ? {} : { repositoryKey }),
+  };
+}
+
 async function repositoryForThread(
   bb: BbPluginApi,
   threadId: string,
@@ -56,12 +66,30 @@ export default function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async history({ threadId, offset, limit }) {
+    async repositories({ threadId }) {
+      try {
+        const target = await repositoryForThread(bb, threadId);
+        const result = await host.call(
+          "repositories",
+          { environmentPath: target.environmentPath },
+          { hostId: target.hostId },
+        );
+        return { ...result, unavailableReason: null };
+      } catch (error) {
+        if (!(error instanceof RepositoryUnavailableError)) throw error;
+        return {
+          repositories: [],
+          unavailableReason: error.message,
+        };
+      }
+    },
+
+    async history({ threadId, repositoryKey, offset, limit }) {
       try {
         const target = await repositoryForThread(bb, threadId);
         return await host.call(
           "history",
-          { environmentPath: target.environmentPath, offset, limit },
+          { ...repositoryInput(target, repositoryKey), offset, limit },
           { hostId: target.hostId },
         );
       } catch (error) {
@@ -80,12 +108,12 @@ export default function plugin(bb: BbPluginApi) {
       }
     },
 
-    async historyRevision({ threadId }) {
+    async historyRevision({ threadId, repositoryKey }) {
       try {
         const target = await repositoryForThread(bb, threadId);
         return await host.call(
           "historyRevision",
-          { environmentPath: target.environmentPath },
+          repositoryInput(target, repositoryKey),
           { hostId: target.hostId },
         );
       } catch (error) {
@@ -97,29 +125,29 @@ export default function plugin(bb: BbPluginApi) {
       }
     },
 
-    async details({ threadId, hash }) {
+    async details({ threadId, repositoryKey, hash }) {
       const target = await repositoryForThread(bb, threadId);
       return host.call(
         "details",
-        { environmentPath: target.environmentPath, hash },
+        { ...repositoryInput(target, repositoryKey), hash },
         { hostId: target.hostId },
       );
     },
 
-    async patch({ threadId, hash, path }) {
+    async patch({ threadId, repositoryKey, hash, path }) {
       const target = await repositoryForThread(bb, threadId);
       return host.call(
         "patch",
-        { environmentPath: target.environmentPath, hash, path },
+        { ...repositoryInput(target, repositoryKey), hash, path },
         { hostId: target.hostId },
       );
     },
 
-    async workingPatch({ threadId, path }) {
+    async workingPatch({ threadId, repositoryKey, path }) {
       const target = await repositoryForThread(bb, threadId);
       return host.call(
         "workingPatch",
-        { environmentPath: target.environmentPath, path },
+        { ...repositoryInput(target, repositoryKey), path },
         { hostId: target.hostId },
       );
     },

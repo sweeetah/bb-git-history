@@ -58,6 +58,7 @@ const commitDetails: CommitDetails = {
 
 function rpcHandlers() {
   return {
+    repositories: async () => ({ repositories: [], unavailableReason: null }),
     history: async () => historyPage,
     historyRevision: async () => ({ revision: "revision-1", unavailableReason: null }),
     details: async () => commitDetails,

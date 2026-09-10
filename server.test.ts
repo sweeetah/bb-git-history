@@ -113,4 +113,253 @@ describe("Git history server", () => {
 
     await harness.lifecycle.dispose();
   });
+
+  it("routes repository discovery and every data RPC to the thread environment host", async () => {
+    const hash = "a1b2c3d4";
+    const thread = {
+      ...makeThreadResponse({
+        id: "thread-1",
+        projectId: "project-1",
+        environmentId: "environment-1",
+      }),
+      environment: {
+        id: "environment-1",
+        projectId: "project-1",
+        hostId: "host-1",
+        name: null,
+        path: "/workspace/root",
+        branchName: null,
+        baseBranch: null,
+        defaultBranch: null,
+        mergeBaseBranch: null,
+        isGitRepo: false,
+        isWorktree: false,
+        managed: false,
+        status: "ready" as const,
+        workspaceProvisionType: "unmanaged" as const,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    };
+    const historyPage: HistoryPage = {
+      repoName: "api",
+      currentBranch: "main",
+      uncommittedFiles: [],
+      commits: [],
+      offset: 0,
+      total: 0,
+      hasMore: false,
+      revision: "revision-1",
+      unavailableReason: null,
+    };
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "git-history",
+      sdk: {
+        threads: {
+          get: async () => thread,
+        },
+      },
+      experimental_callHostRpc: async ({ input, method }) => {
+        if ((input as { repositoryKey?: string }).repositoryKey === "/tmp/other") {
+          throw new Error("repository selection rejected at host boundary");
+        }
+        switch (method) {
+          case "repositories":
+            return {
+              repositories: [
+                { key: "repos/api", name: "api" },
+                { key: "repos/web", name: "web" },
+              ],
+            };
+          case "historyRevision":
+            return { revision: "revision-1", unavailableReason: null };
+          case "details":
+            return {
+              hash,
+              parents: [],
+              authorName: "Ada Lovelace",
+              authorEmail: "ada@example.com",
+              authorDate: "2026-09-10T00:00:00.000Z",
+              committerDate: "2026-09-10T00:00:00.000Z",
+              subject: "Add repository routing",
+              refs: [],
+              body: "",
+              files: [],
+            };
+          case "patch":
+          case "workingPatch":
+            return { path: "README.md", patch: "@@ -1 +1 @@", truncated: false };
+          default:
+            return historyPage;
+        }
+      },
+    });
+    plugin(bb);
+
+    await expect(harness.behavior.callRpc("repositories", { threadId: "thread-1" })).resolves.toEqual({
+      repositories: [
+        { key: "repos/api", name: "api" },
+        { key: "repos/web", name: "web" },
+      ],
+      unavailableReason: null,
+    });
+    await harness.behavior.callRpc("history", {
+      threadId: "thread-1",
+      repositoryKey: "repos/api",
+      offset: 0,
+      limit: 200,
+    });
+    await harness.behavior.callRpc("historyRevision", {
+      threadId: "thread-1",
+      repositoryKey: "repos/api",
+    });
+    await harness.behavior.callRpc("details", {
+      threadId: "thread-1",
+      repositoryKey: "repos/api",
+      hash,
+    });
+    await harness.behavior.callRpc("patch", {
+      threadId: "thread-1",
+      repositoryKey: "repos/api",
+      hash,
+      path: "README.md",
+    });
+    await harness.behavior.callRpc("workingPatch", {
+      threadId: "thread-1",
+      repositoryKey: "repos/api",
+      path: "README.md",
+    });
+
+    expect(harness.inspection.experimental_hostRpcCalls).toContainEqual({
+      method: "repositories",
+      hostId: "host-1",
+      input: { environmentPath: "/workspace/root" },
+    });
+    expect(harness.inspection.experimental_hostRpcCalls).toContainEqual({
+      method: "history",
+      hostId: "host-1",
+      input: {
+        environmentPath: "/workspace/root",
+        repositoryKey: "repos/api",
+        offset: 0,
+        limit: 200,
+      },
+    });
+    expect(harness.inspection.experimental_hostRpcCalls).toContainEqual({
+      method: "historyRevision",
+      hostId: "host-1",
+      input: {
+        environmentPath: "/workspace/root",
+        repositoryKey: "repos/api",
+      },
+    });
+    expect(harness.inspection.experimental_hostRpcCalls).toContainEqual({
+      method: "details",
+      hostId: "host-1",
+      input: {
+        environmentPath: "/workspace/root",
+        repositoryKey: "repos/api",
+        hash,
+      },
+    });
+    expect(harness.inspection.experimental_hostRpcCalls).toContainEqual({
+      method: "patch",
+      hostId: "host-1",
+      input: {
+        environmentPath: "/workspace/root",
+        repositoryKey: "repos/api",
+        hash,
+        path: "README.md",
+      },
+    });
+    expect(harness.inspection.experimental_hostRpcCalls).toContainEqual({
+      method: "workingPatch",
+      hostId: "host-1",
+      input: {
+        environmentPath: "/workspace/root",
+        repositoryKey: "repos/api",
+        path: "README.md",
+      },
+    });
+
+    await expect(harness.behavior.callRpc("history", {
+      threadId: "thread-1",
+      repositoryKey: "/tmp/other",
+      offset: 0,
+      limit: 200,
+    })).rejects.toThrow(/host boundary/);
+    expect(harness.inspection.experimental_hostRpcCalls.at(-1)).toEqual({
+      method: "history",
+      hostId: "host-1",
+      input: {
+        environmentPath: "/workspace/root",
+        repositoryKey: "/tmp/other",
+        offset: 0,
+        limit: 200,
+      },
+    });
+
+    await harness.lifecycle.dispose();
+  });
+
+  it("returns unavailable payloads when a thread has no ready environment", async () => {
+    const missingEnvironment = makeThreadResponse({
+      id: "thread-missing",
+      projectId: "project-1",
+      environmentId: null,
+    });
+    const unreadyEnvironment = {
+      ...makeThreadResponse({
+        id: "thread-provisioning",
+        projectId: "project-1",
+        environmentId: "environment-1",
+      }),
+      environment: {
+        id: "environment-1",
+        projectId: "project-1",
+        hostId: "host-1",
+        name: null,
+        path: "/workspace/root",
+        branchName: null,
+        baseBranch: null,
+        defaultBranch: null,
+        mergeBaseBranch: null,
+        isGitRepo: false,
+        isWorktree: false,
+        managed: false,
+        status: "provisioning" as const,
+        workspaceProvisionType: "unmanaged" as const,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    };
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "git-history",
+      sdk: {
+        threads: {
+          get: async ({ threadId }) => threadId === "thread-missing"
+            ? missingEnvironment
+            : unreadyEnvironment,
+        },
+      },
+    });
+    plugin(bb);
+
+    for (const threadId of ["thread-missing", "thread-provisioning"]) {
+      await expect(harness.behavior.callRpc("repositories", { threadId })).resolves.toEqual(
+        expect.objectContaining({ unavailableReason: expect.any(String) }),
+      );
+      await expect(harness.behavior.callRpc("history", {
+        threadId,
+        offset: 0,
+        limit: 200,
+      })).resolves.toEqual(expect.objectContaining({ unavailableReason: expect.any(String) }));
+      await expect(harness.behavior.callRpc("historyRevision", { threadId })).resolves.toEqual(
+        expect.objectContaining({ unavailableReason: expect.any(String) }),
+      );
+    }
+    expect(harness.inspection.experimental_hostRpcCalls).toEqual([]);
+
+    await harness.lifecycle.dispose();
+  });
 });
