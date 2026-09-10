@@ -1,6 +1,6 @@
 import type { Dirent } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export type RepositoryDescriptor = { key: string; name: string };
 
@@ -56,9 +56,11 @@ export async function discoverRepositories(
     return [{ key: ".", name: basename(environmentRoot) }];
   }
 
+  let repositoriesDirectory: string;
   let entries: Dirent<string>[];
   try {
-    entries = await readdir(resolve(environmentRoot, "repos"), { withFileTypes: true });
+    repositoriesDirectory = await realpath(resolve(environmentRoot, "repos"));
+    entries = await readdir(repositoriesDirectory, { withFileTypes: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -69,8 +71,9 @@ export async function discoverRepositories(
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 
     try {
-      const candidate = await realpath(resolve(environmentRoot, "repos", entry.name));
+      const candidate = await realpath(resolve(repositoriesDirectory, entry.name));
       if (!isInside(environmentRoot, candidate)) continue;
+      if (dirname(candidate) !== repositoriesDirectory) continue;
       if (!(await isRepository(candidate, signal, run))) continue;
 
       const key = repositoryKey(environmentRoot, candidate);

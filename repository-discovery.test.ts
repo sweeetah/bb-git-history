@@ -70,6 +70,20 @@ describe("discoverRepositories", () => {
       { key: "repos/web", name: "web" },
     ]);
   });
+
+  it("rejects inward symlinks whose canonical repositories are not immediate repos children", async () => {
+    const root = await createRoot();
+    const hiddenRepository = join(root, "hidden-repo");
+    const nestedRepository = join(root, "repos", "group", "nested");
+    await createRepository(hiddenRepository);
+    await createRepository(nestedRepository);
+    await symlink(hiddenRepository, join(root, "repos", "hidden-alias"));
+    await symlink(nestedRepository, join(root, "repos", "nested-alias"));
+
+    const result = await discoverRepositories(root, new AbortController().signal, runGit);
+
+    expect(result).toEqual([]);
+  });
 });
 
 describe("resolveRepositorySelection", () => {
