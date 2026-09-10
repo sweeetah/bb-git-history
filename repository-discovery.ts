@@ -1,14 +1,47 @@
+import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import type { RepositoryDescriptor } from "./contracts";
 
-export type RepositoryDescriptor = { key: string; name: string };
+const MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 export type GitRunner = (
   cwd: string,
   args: string[],
   signal: AbortSignal,
+  acceptedExitCodes?: readonly number[],
 ) => Promise<string>;
+
+export function runGit(
+  cwd: string,
+  args: string[],
+  signal: AbortSignal,
+  acceptedExitCodes: readonly number[] = [],
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+        signal,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        const exitCode = error && typeof error.code === "number" ? error.code : null;
+        if (error && (exitCode === null || !acceptedExitCodes.includes(exitCode))) {
+          const detail = stderr.trim();
+          reject(new Error(detail || error.message));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
 
 function isInside(root: string, candidate: string): boolean {
   const pathFromRoot = relative(root, candidate);

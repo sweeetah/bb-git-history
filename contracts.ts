@@ -75,6 +75,20 @@ export const commitPatchSchema = z
   })
   .strict();
 
+export const repositoryDescriptorSchema = z
+  .object({
+    key: z.string().min(1).max(16_384),
+    name: z.string().min(1).max(512),
+  })
+  .strict();
+
+export const repositorySelectionSchema = z
+  .object({
+    environmentPath: z.string().min(1).max(16_384),
+    repositoryKey: z.string().min(1).max(16_384).optional(),
+  })
+  .strict();
+
 const threadHistoryInputSchema = z
   .object({
     threadId: z.string().min(1),
@@ -126,39 +140,41 @@ export const rpcContract = defineRpcContract({
   },
 });
 
-const hostRepositoryInputSchema = z
-  .object({
-    repoPath: z.string().min(1).max(16_384),
-  })
-  .strict();
-
 export const hostContract = defineRpcContract({
+  repositories: {
+    input: z.object({
+      environmentPath: z.string().min(1).max(16_384),
+    }).strict(),
+    output: z.object({
+      repositories: z.array(repositoryDescriptorSchema),
+    }).strict(),
+  },
   history: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       offset: z.number().int().nonnegative(),
       limit: z.number().int().min(1).max(400),
     }),
     output: historyPageSchema,
   },
   historyRevision: {
-    input: hostRepositoryInputSchema,
+    input: repositorySelectionSchema,
     output: historyRevisionSchema,
   },
   details: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       hash: z.string().min(4).max(128),
     }),
     output: commitDetailsSchema,
   },
   patch: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       hash: z.string().min(4).max(128),
       path: z.string().min(1).max(16_384),
     }),
     output: commitPatchSchema,
   },
   workingPatch: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       path: z.string().min(1).max(16_384),
     }),
     output: commitPatchSchema,
@@ -172,3 +188,4 @@ export type HistoryPage = z.infer<typeof historyPageSchema>;
 export type HistoryRevision = z.infer<typeof historyRevisionSchema>;
 export type CommitDetails = z.infer<typeof commitDetailsSchema>;
 export type CommitPatch = z.infer<typeof commitPatchSchema>;
+export type RepositoryDescriptor = z.infer<typeof repositoryDescriptorSchema>;

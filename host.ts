@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, join } from "node:path";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import type {
   CommitDetails,
@@ -10,10 +9,14 @@ import type {
   GitRef,
 } from "./contracts";
 import { hostContract } from "./contracts";
+import {
+  discoverRepositories,
+  resolveRepositorySelection,
+  runGit,
+} from "./repository-discovery";
 
 const SUMMARY_FIELD_COUNT = 7;
 const DETAIL_FIELD_COUNT = 8;
-const MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024;
 const MAX_PATCH_CHARS = 1_500_000;
 const HIDDEN_REF_NAMESPACES = ["refs/t3/checkpoints"] as const;
 const VISIBLE_HISTORY_REVISIONS = [
@@ -26,36 +29,6 @@ function isHiddenRef(fullName: string): boolean {
   return HIDDEN_REF_NAMESPACES.some(
     (namespace) => fullName === namespace || fullName.startsWith(`${namespace}/`),
   );
-}
-
-function runGit(
-  cwd: string,
-  args: string[],
-  signal: AbortSignal,
-  acceptedExitCodes: readonly number[] = [],
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: MAX_GIT_OUTPUT_BYTES,
-        signal,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        const exitCode = error && typeof error.code === "number" ? error.code : null;
-        if (error && (exitCode === null || !acceptedExitCodes.includes(exitCode))) {
-          const detail = stderr.trim();
-          reject(new Error(detail || error.message));
-          return;
-        }
-        resolve(stdout);
-      },
-    );
-  });
 }
 
 async function runGitOptional(
@@ -74,26 +47,6 @@ function assertObjectName(hash: string): void {
   if (!/^[0-9a-fA-F]{4,64}$/.test(hash)) {
     throw new Error("Git returned an invalid commit hash.");
   }
-}
-
-async function resolveRepository(
-  repoPath: string,
-  signal: AbortSignal,
-): Promise<string> {
-  if (!isAbsolute(repoPath)) {
-    throw new Error("The thread environment does not have an absolute path.");
-  }
-
-  const inside = (
-    await runGit(repoPath, ["rev-parse", "--is-inside-work-tree"], signal)
-  ).trim();
-  if (inside !== "true") {
-    throw new Error("The thread environment is not inside a Git repository.");
-  }
-
-  return (
-    await runGit(repoPath, ["rev-parse", "--show-toplevel"], signal)
-  ).trim();
 }
 
 function refKind(fullName: string): GitRef["kind"] {
@@ -514,8 +467,23 @@ async function readCommitDetails(
 export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
-    async history({ repoPath, offset, limit }, context) {
-      const repoRoot = await resolveRepository(repoPath, context.signal);
+    async repositories({ environmentPath }, context) {
+      return {
+        repositories: await discoverRepositories(
+          environmentPath,
+          context.signal,
+          runGit,
+        ),
+      };
+    },
+
+    async history({ environmentPath, repositoryKey, offset, limit }, context) {
+      const repoRoot = await resolveRepositorySelection(
+        environmentPath,
+        repositoryKey,
+        context.signal,
+        runGit,
+      );
       const [{ byHash, currentBranch, headHash, revision: refsRevision }, rawHistory, rawCount, workingTree] = await Promise.all([
         readRefs(repoRoot, context.signal),
         runGit(
@@ -561,22 +529,37 @@ export default experimental_defineHostEntry({
       };
     },
 
-    async historyRevision({ repoPath }, context) {
-      const repoRoot = await resolveRepository(repoPath, context.signal);
+    async historyRevision({ environmentPath, repositoryKey }, context) {
+      const repoRoot = await resolveRepositorySelection(
+        environmentPath,
+        repositoryKey,
+        context.signal,
+        runGit,
+      );
       return {
         revision: await readHistoryRevision(repoRoot, context.signal),
         unavailableReason: null,
       };
     },
 
-    async details({ repoPath, hash }, context) {
-      const repoRoot = await resolveRepository(repoPath, context.signal);
+    async details({ environmentPath, repositoryKey, hash }, context) {
+      const repoRoot = await resolveRepositorySelection(
+        environmentPath,
+        repositoryKey,
+        context.signal,
+        runGit,
+      );
       return readCommitDetails(repoRoot, hash, context.signal);
     },
 
-    async patch({ repoPath, hash, path }, context) {
+    async patch({ environmentPath, repositoryKey, hash, path }, context) {
+      const repoRoot = await resolveRepositorySelection(
+        environmentPath,
+        repositoryKey,
+        context.signal,
+        runGit,
+      );
       assertObjectName(hash);
-      const repoRoot = await resolveRepository(repoPath, context.signal);
       const rawPatch = await runGit(
         repoRoot,
         [
@@ -600,8 +583,13 @@ export default experimental_defineHostEntry({
       };
     },
 
-    async workingPatch({ repoPath, path }, context) {
-      const repoRoot = await resolveRepository(repoPath, context.signal);
+    async workingPatch({ environmentPath, repositoryKey, path }, context) {
+      const repoRoot = await resolveRepositorySelection(
+        environmentPath,
+        repositoryKey,
+        context.signal,
+        runGit,
+      );
       const { files } = await readWorkingTreeFiles(repoRoot, context.signal);
       if (!files.some((file) => file.path === path)) {
         throw new Error(`Uncommitted file ${path} was not found.`);

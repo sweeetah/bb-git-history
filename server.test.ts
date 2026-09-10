@@ -85,7 +85,7 @@ describe("Git history server", () => {
         method: "history",
         hostId: "host-1",
         input: {
-          repoPath: "/workspace/plain-folder",
+          environmentPath: "/workspace/plain-folder",
           offset: 0,
           limit: 200,
         },
@@ -106,7 +106,7 @@ describe("Git history server", () => {
       method: "workingPatch",
       hostId: "host-1",
       input: {
-        repoPath: "/workspace/plain-folder",
+        environmentPath: "/workspace/plain-folder",
         path: "README.md",
       },
     });

@@ -5,7 +5,7 @@ export { rpcContract } from "./contracts";
 
 interface RepositoryTarget {
   hostId: string;
-  repoPath: string;
+  environmentPath: string;
 }
 
 class RepositoryUnavailableError extends Error {}
@@ -33,7 +33,7 @@ async function repositoryForThread(
 
   return {
     hostId: environment.hostId,
-    repoPath: environment.path,
+    environmentPath: environment.path,
   };
 }
 
@@ -61,7 +61,7 @@ export default function plugin(bb: BbPluginApi) {
         const target = await repositoryForThread(bb, threadId);
         return await host.call(
           "history",
-          { repoPath: target.repoPath, offset, limit },
+          { environmentPath: target.environmentPath, offset, limit },
           { hostId: target.hostId },
         );
       } catch (error) {
@@ -85,7 +85,7 @@ export default function plugin(bb: BbPluginApi) {
         const target = await repositoryForThread(bb, threadId);
         return await host.call(
           "historyRevision",
-          { repoPath: target.repoPath },
+          { environmentPath: target.environmentPath },
           { hostId: target.hostId },
         );
       } catch (error) {
@@ -101,7 +101,7 @@ export default function plugin(bb: BbPluginApi) {
       const target = await repositoryForThread(bb, threadId);
       return host.call(
         "details",
-        { repoPath: target.repoPath, hash },
+        { environmentPath: target.environmentPath, hash },
         { hostId: target.hostId },
       );
     },
@@ -110,7 +110,7 @@ export default function plugin(bb: BbPluginApi) {
       const target = await repositoryForThread(bb, threadId);
       return host.call(
         "patch",
-        { repoPath: target.repoPath, hash, path },
+        { environmentPath: target.environmentPath, hash, path },
         { hostId: target.hostId },
       );
     },
@@ -119,7 +119,7 @@ export default function plugin(bb: BbPluginApi) {
       const target = await repositoryForThread(bb, threadId);
       return host.call(
         "workingPatch",
-        { repoPath: target.repoPath, path },
+        { environmentPath: target.environmentPath, path },
         { hostId: target.hostId },
       );
     },
