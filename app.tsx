@@ -1008,36 +1008,53 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
   const [discoveryLoading, setDiscoveryLoading] = useState(true);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const discoverySequence = useRef(0);
+  const discoveryRequest = useRef<{
+    threadId: string;
+    promise: Promise<RepositoryDescriptor[]>;
+  } | null>(null);
   const hasDiscoveredRepositories = useRef(false);
 
-  const refreshRepositories = useCallback(async (): Promise<RepositoryDescriptor[]> => {
-    const sequence = ++discoverySequence.current;
-    setDiscoveryLoading(true);
-    try {
-      const result = await rpc.call("repositories", { threadId });
-      if (sequence !== discoverySequence.current) return [];
-      const isInitialDiscovery = !hasDiscoveredRepositories.current;
-      hasDiscoveredRepositories.current = true;
-      setRepositories(result.repositories);
-      setDiscoveryError(result.unavailableReason);
-      setRepositoryKey((current) => {
-        if (isInitialDiscovery) return result.repositories[0]?.key ?? null;
-        if (current && result.repositories.some((repository) => repository.key === current)) {
-          return current;
-        }
-        return null;
-      });
-      return result.repositories;
-    } catch (error) {
-      if (sequence === discoverySequence.current) {
-        setRepositories([]);
-        setRepositoryKey(null);
-        setDiscoveryError(errorMessage(error));
-      }
-      return [];
-    } finally {
-      if (sequence === discoverySequence.current) setDiscoveryLoading(false);
+  const refreshRepositories = useCallback((): Promise<RepositoryDescriptor[]> => {
+    if (discoveryRequest.current?.threadId === threadId) {
+      return discoveryRequest.current.promise;
     }
+
+    const sequence = ++discoverySequence.current;
+    const request = (async (): Promise<RepositoryDescriptor[]> => {
+      setDiscoveryLoading(true);
+      try {
+        const result = await rpc.call("repositories", { threadId });
+        if (sequence !== discoverySequence.current) return [];
+        const isInitialDiscovery = !hasDiscoveredRepositories.current;
+        hasDiscoveredRepositories.current = true;
+        setRepositories(result.repositories);
+        setDiscoveryError(result.unavailableReason);
+        setRepositoryKey((current) => {
+          if (isInitialDiscovery) return result.repositories[0]?.key ?? null;
+          if (current && result.repositories.some((repository) => repository.key === current)) {
+            return current;
+          }
+          return null;
+        });
+        return result.repositories;
+      } catch (error) {
+        if (sequence === discoverySequence.current) {
+          setRepositories([]);
+          setRepositoryKey(null);
+          setDiscoveryError(errorMessage(error));
+        }
+        return [];
+      } finally {
+        if (sequence === discoverySequence.current) setDiscoveryLoading(false);
+      }
+    })();
+    discoveryRequest.current = { threadId, promise: request };
+    void request.finally(() => {
+      if (discoveryRequest.current?.promise === request) {
+        discoveryRequest.current = null;
+      }
+    });
+    return request;
   }, [rpc, threadId]);
 
   useEffect(() => {

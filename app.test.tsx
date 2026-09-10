@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import {
   loadPluginApp,
   renderSlot,
@@ -342,6 +342,50 @@ describe("Git history app", () => {
     const replacementSelector = panel.getByLabelText("Repository");
     fireEvent.change(replacementSelector, { target: { value: "repos/api" } });
     await panel.findByRole("button", { name: /API history/ });
+    panel.lifecycle.unmount();
+  });
+
+  it("completes an explicit refresh when an overlapping poll discovery supersedes it", async () => {
+    const explicitDiscovery = deferred<{
+      repositories: RepositoryDescriptor[];
+      unavailableReason: null;
+    }>();
+    let repositoryCalls = 0;
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => {
+            repositoryCalls += 1;
+            if (repositoryCalls === 2) return explicitDiscovery.promise;
+            return {
+              repositories: [{ key: "repos/api", name: "API" }],
+              unavailableReason: null,
+            };
+          },
+        },
+      },
+    );
+
+    await panel.findByText("example-repo / main");
+    const historyCallsBeforeRefresh = panel.inspection.rpcCalls.filter((call) => call.method === "history");
+    fireEvent.click(panel.getByRole("button", { name: "Refresh Git history" }));
+    await waitFor(() => expect(repositoryCalls).toBe(2));
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(repositoryCalls).toBe(2);
+    explicitDiscovery.resolve({
+      repositories: [{ key: "repos/api", name: "API" }],
+      unavailableReason: null,
+    });
+
+    await waitFor(() => {
+      expect(panel.inspection.rpcCalls.filter((call) => call.method === "history"))
+        .toHaveLength(historyCallsBeforeRefresh.length + 1);
+    });
     panel.lifecycle.unmount();
   });
 });
