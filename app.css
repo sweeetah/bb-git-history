@@ -1408,6 +1408,30 @@
   line-height: 1;
 }
 
+.git-repository-select {
+  display: flex;
+  min-width: 0;
+}
+
+.git-repository-select select {
+  min-width: 0;
+  max-width: 132px;
+  height: 24px;
+  padding: 0 24px 0 7px;
+  border: 1px solid var(--gh-border, var(--border));
+  border-radius: 5px;
+  background: var(--gh-surface-subtle, var(--muted));
+  color: var(--gh-text, var(--foreground));
+  font-size: 11px;
+  line-height: 1;
+}
+
+.git-repository-select select:focus-visible {
+  border-color: var(--gh-accent-border, var(--ring));
+  outline: none;
+  box-shadow: 0 0 0 1px var(--gh-accent-border, var(--ring));
+}
+
 .git-repository > span {
   min-width: 0;
   overflow: hidden;

@@ -8,7 +8,7 @@ import {
 } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginThreadPanelProps } from "@get-bb/plugin-sdk";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { CommitDetails, HistoryPage } from "./contracts";
+import type { CommitDetails, HistoryPage, RepositoryDescriptor } from "./contracts";
 import type { rpcContract } from "./server";
 
 const hash = "1234567890abcdef1234567890abcdef12345678";
@@ -58,7 +58,10 @@ const commitDetails: CommitDetails = {
 
 function rpcHandlers() {
   return {
-    repositories: async () => ({ repositories: [], unavailableReason: null }),
+    repositories: async () => ({
+      repositories: [{ key: "repos/api", name: "API" }],
+      unavailableReason: null,
+    }),
     history: async () => historyPage,
     historyRevision: async () => ({ revision: "revision-1", unavailableReason: null }),
     details: async () => commitDetails,
@@ -73,6 +76,34 @@ function rpcHandlers() {
       truncated: false,
     }),
   };
+}
+
+function historyFor(repositoryKey: string): HistoryPage {
+  const name = repositoryKey === "repos/web" ? "Web" : "API";
+  return {
+    ...historyPage,
+    repoName: name,
+    commits: historyPage.commits.map((commit) => ({
+      ...commit,
+      subject: `${name} history`,
+    })),
+    uncommittedFiles: [
+      {
+        path: "src/working.ts",
+        status: "modified",
+        additions: 1,
+        deletions: 0,
+      },
+    ],
+  };
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve: resolve! };
 }
 
 let app: CapturedPluginApp;
@@ -135,8 +166,182 @@ describe("Git history app", () => {
     expect(panel.container.querySelector(".git-expansion-graph")).not.toBeNull();
     expect(panel.inspection.rpcCalls).toContainEqual({
       method: "details",
-      input: { threadId: "thread-1", hash },
+      input: { threadId: "thread-1", repositoryKey: "repos/api", hash },
     });
+    panel.lifecycle.unmount();
+  });
+
+  it("keeps the native repository selector hidden for one repository", async () => {
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      { settings: {}, rpc: rpcHandlers() },
+    );
+
+    await panel.findByText("example-repo / main");
+    expect(panel.queryByLabelText("Repository")).toBeNull();
+    expect(panel.inspection.rpcCalls).toContainEqual({
+      method: "history",
+      input: {
+        threadId: "thread-1",
+        repositoryKey: "repos/api",
+        offset: 0,
+        limit: 200,
+      },
+    });
+    panel.lifecycle.unmount();
+  });
+
+  it("scopes history, details, and patches to the selected repository", async () => {
+    const repositories: RepositoryDescriptor[] = [
+      { key: "repos/api", name: "API" },
+      { key: "repos/web", name: "Web" },
+    ];
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({ repositories, unavailableReason: null }),
+          history: async ({ repositoryKey }: { repositoryKey?: string }) =>
+            historyFor(repositoryKey ?? "repos/api"),
+          details: async () => ({
+            ...commitDetails,
+            subject: "Web history",
+          }),
+          patch: async () => ({
+            path: "src/example.ts",
+            patch: "",
+            truncated: false,
+          }),
+        },
+      },
+    );
+
+    const selector = await panel.findByLabelText("Repository");
+    fireEvent.change(selector, { target: { value: "repos/web" } });
+    await panel.findByRole("button", { name: /Web history/ });
+    expect(panel.inspection.rpcCalls).toContainEqual({
+      method: "history",
+      input: {
+        threadId: "thread-1",
+        repositoryKey: "repos/web",
+        offset: 0,
+        limit: 200,
+      },
+    });
+
+    fireEvent.click(panel.getByRole("button", { name: /Web history/ }));
+    await panel.findByText("A longer explanation of the change.", { exact: false });
+    expect(panel.inspection.rpcCalls).toContainEqual({
+      method: "details",
+      input: { threadId: "thread-1", repositoryKey: "repos/web", hash },
+    });
+
+    fireEvent.click(panel.getByTitle("Open diff for src/example.ts"));
+    await panel.findByText("No textual diff for this file.");
+    expect(panel.inspection.rpcCalls).toContainEqual({
+      method: "patch",
+      input: {
+        threadId: "thread-1",
+        repositoryKey: "repos/web",
+        hash,
+        path: "src/example.ts",
+      },
+    });
+
+    fireEvent.click(panel.getByRole("button", { name: "Back to Git history" }));
+    fireEvent.click(panel.getByRole("button", { name: /Uncommitted/ }));
+    fireEvent.click(panel.getByTitle("Open uncommitted diff for src/working.ts"));
+    await panel.findByText("No textual diff for this file.");
+    expect(panel.inspection.rpcCalls).toContainEqual({
+      method: "workingPatch",
+      input: {
+        threadId: "thread-1",
+        repositoryKey: "repos/web",
+        path: "src/working.ts",
+      },
+    });
+    panel.lifecycle.unmount();
+  });
+
+  it("does not render a late previous-repository history response after switching", async () => {
+    const apiHistory = deferred<HistoryPage>();
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({
+            repositories: [
+              { key: "repos/api", name: "API" },
+              { key: "repos/web", name: "Web" },
+            ],
+            unavailableReason: null,
+          }),
+          history: async ({ repositoryKey }: { repositoryKey?: string }) =>
+            repositoryKey === "repos/web"
+              ? historyFor("repos/web")
+              : apiHistory.promise,
+        },
+      },
+    );
+
+    const selector = await panel.findByLabelText("Repository");
+    fireEvent.change(selector, { target: { value: "repos/web" } });
+    await panel.findByRole("button", { name: /Web history/ });
+    apiHistory.resolve(historyFor("repos/api"));
+    await Promise.resolve();
+
+    expect(panel.getByRole("button", { name: /Web history/ })).toBeTruthy();
+    expect(panel.queryByRole("button", { name: /API history/ })).toBeNull();
+    panel.lifecycle.unmount();
+  });
+
+  it("requires a new selection when the selected repository disappears on refresh", async () => {
+    let discoveryCalls = 0;
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => {
+            discoveryCalls += 1;
+            return {
+              repositories: discoveryCalls === 1
+                ? [
+                  { key: "repos/api", name: "API" },
+                  { key: "repos/web", name: "Web" },
+                ]
+                : [{ key: "repos/api", name: "API" }],
+              unavailableReason: null,
+            };
+          },
+          history: async ({ repositoryKey }: { repositoryKey?: string }) =>
+            historyFor(repositoryKey ?? "repos/api"),
+        },
+      },
+    );
+
+    const selector = await panel.findByLabelText("Repository");
+    fireEvent.change(selector, { target: { value: "repos/web" } });
+    await panel.findByRole("button", { name: /Web history/ });
+    const historyCallsBeforeRefresh = panel.inspection.rpcCalls.filter((call) => call.method === "history");
+    fireEvent.click(panel.getByRole("button", { name: "Refresh Git history" }));
+
+    await panel.findByText("The selected repository is no longer available.");
+    expect(panel.queryByRole("button", { name: /Web history/ })).toBeNull();
+    expect(panel.inspection.rpcCalls.filter((call) => call.method === "history"))
+      .toHaveLength(historyCallsBeforeRefresh.length);
+    const replacementSelector = panel.getByLabelText("Repository");
+    fireEvent.change(replacementSelector, { target: { value: "repos/api" } });
+    await panel.findByRole("button", { name: /API history/ });
     panel.lifecycle.unmount();
   });
 });

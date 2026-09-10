@@ -25,6 +25,7 @@ import type {
   GitFileChange,
   GitRef,
   HistoryPage,
+  RepositoryDescriptor,
 } from "./contracts";
 import { layoutCommitGraph, type GraphRow } from "./graph";
 import { Button } from "./components/ui/button";
@@ -399,6 +400,7 @@ function commitMatches(commit: GitCommitSummary, rawQuery: string): boolean {
 
 function CommitList({
   threadId,
+  repositoryKey,
   commits,
   uncommittedFiles,
   uncommittedExpanded,
@@ -415,6 +417,7 @@ function CommitList({
   onToggleUncommitted,
 }: {
   threadId: string;
+  repositoryKey: string;
   commits: GitCommitSummary[];
   uncommittedFiles: GitFileChange[];
   uncommittedExpanded: boolean;
@@ -655,6 +658,7 @@ function CommitList({
                 <InlineCommitFiles
                   id={expansionId}
                   threadId={threadId}
+                  repositoryKey={repositoryKey}
                   commit={commit}
                   experimentalGraph={experimentalGraph}
                   graphWidth={graphWidth}
@@ -721,6 +725,7 @@ function changeTotals(files: GitFileChange[]): { additions: number; deletions: n
 function InlineCommitFiles({
   id,
   threadId,
+  repositoryKey,
   commit,
   experimentalGraph,
   graphWidth,
@@ -731,6 +736,7 @@ function InlineCommitFiles({
 }: {
   id: string;
   threadId: string;
+  repositoryKey: string;
   commit: GitCommitSummary;
   experimentalGraph: boolean;
   graphWidth: number;
@@ -748,7 +754,7 @@ function InlineCommitFiles({
     setDetails(null);
     setDetailsError(null);
     void rpc
-      .call("details", { threadId, hash: commit.hash })
+      .call("details", { threadId, repositoryKey, hash: commit.hash })
       .then((result) => {
         if (active) setDetails(result);
       })
@@ -758,7 +764,7 @@ function InlineCommitFiles({
     return () => {
       active = false;
     };
-  }, [commit.hash, rpc, threadId]);
+  }, [commit.hash, repositoryKey, rpc, threadId]);
 
   const totals = details ? changeTotals(details.files) : null;
   const continuationLanes = graphRow
@@ -865,12 +871,14 @@ function InlineCommitFiles({
 
 function FileDiffPanel({
   threadId,
+  repositoryKey,
   source,
   files,
   initialPath,
   onBack,
 }: {
   threadId: string;
+  repositoryKey: string;
   source:
     | { kind: "commit"; hash: string; label: string }
     | { kind: "working-tree"; label: string };
@@ -892,8 +900,8 @@ function FileDiffPanel({
     setPatch(null);
     setPatchError(null);
     const request = source.kind === "commit"
-      ? rpc.call("patch", { threadId, hash: source.hash, path })
-      : rpc.call("workingPatch", { threadId, path });
+      ? rpc.call("patch", { threadId, repositoryKey, hash: source.hash, path })
+      : rpc.call("workingPatch", { threadId, repositoryKey, path });
     void request
       .then((result) => {
         if (active) setPatch(result);
@@ -904,7 +912,7 @@ function FileDiffPanel({
     return () => {
       active = false;
     };
-  }, [path, rpc, source, threadId]);
+  }, [path, repositoryKey, rpc, source, threadId]);
 
   return (
     <div className="git-history-panel git-diff-panel">
@@ -995,6 +1003,116 @@ function FileDiffPanel({
 
 function GitHistoryPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
+  const [repositories, setRepositories] = useState<RepositoryDescriptor[]>([]);
+  const [repositoryKey, setRepositoryKey] = useState<string | null>(null);
+  const [discoveryLoading, setDiscoveryLoading] = useState(true);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const discoverySequence = useRef(0);
+  const hasDiscoveredRepositories = useRef(false);
+
+  const refreshRepositories = useCallback(async (): Promise<RepositoryDescriptor[]> => {
+    const sequence = ++discoverySequence.current;
+    setDiscoveryLoading(true);
+    try {
+      const result = await rpc.call("repositories", { threadId });
+      if (sequence !== discoverySequence.current) return [];
+      const isInitialDiscovery = !hasDiscoveredRepositories.current;
+      hasDiscoveredRepositories.current = true;
+      setRepositories(result.repositories);
+      setDiscoveryError(result.unavailableReason);
+      setRepositoryKey((current) => {
+        if (isInitialDiscovery) return result.repositories[0]?.key ?? null;
+        if (current && result.repositories.some((repository) => repository.key === current)) {
+          return current;
+        }
+        return null;
+      });
+      return result.repositories;
+    } catch (error) {
+      if (sequence === discoverySequence.current) {
+        setRepositories([]);
+        setRepositoryKey(null);
+        setDiscoveryError(errorMessage(error));
+      }
+      return [];
+    } finally {
+      if (sequence === discoverySequence.current) setDiscoveryLoading(false);
+    }
+  }, [rpc, threadId]);
+
+  useEffect(() => {
+    hasDiscoveredRepositories.current = false;
+    setRepositoryKey(null);
+    void refreshRepositories();
+  }, [refreshRepositories]);
+
+  if (repositoryKey) {
+    return (
+      <RepositoryHistoryPanel
+        key={`${threadId}:${repositoryKey}`}
+        threadId={threadId}
+        repositoryKey={repositoryKey}
+        repositories={repositories}
+        onSelectRepository={setRepositoryKey}
+        onRefreshRepositories={refreshRepositories}
+      />
+    );
+  }
+
+  return (
+    <div className="git-history-panel">
+      {discoveryLoading ? (
+        <div className="git-state" role="status">
+          <Icon name="Loading" className="animate-spin" />
+          <span>Finding Git repositories</span>
+        </div>
+      ) : (
+        <div className="git-state git-state-error" role="alert">
+          <Icon name="AlertCircle" />
+          <strong>Git history unavailable</strong>
+          <span>{discoveryError
+            ?? (repositories.length > 0
+              ? "The selected repository is no longer available."
+              : "No Git repositories are available in this environment.")}
+          </span>
+          {repositories.length > 0 && (
+            <label className="git-repository-select">
+              <span className="sr-only">Repository</span>
+              <select
+                aria-label="Repository"
+                value=""
+                onChange={(event) => setRepositoryKey(event.target.value)}
+              >
+                <option value="" disabled>Select a repository</option>
+                {repositories.map((repository) => (
+                  <option key={repository.key} value={repository.key}>{repository.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <Button variant="outline" size="sm" onClick={() => void refreshRepositories()}>
+            Try again
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RepositoryHistoryPanel({
+  threadId,
+  repositoryKey,
+  repositories,
+  onSelectRepository,
+  onRefreshRepositories,
+}: {
+  threadId: string;
+  repositoryKey: string;
+  repositories: RepositoryDescriptor[];
+  onSelectRepository: (key: string) => void;
+  onRefreshRepositories: () => Promise<RepositoryDescriptor[]>;
+}) {
+  const rpc = useRpc<typeof rpcContract>();
   const { values: settings } = useSettings();
   const [page, setPage] = useState<HistoryPage | null>(null);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
@@ -1039,6 +1157,7 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
         const fetchPage = (pageOffset: number, limit: number) =>
           rpc.call("history", {
             threadId,
+            repositoryKey,
             offset: pageOffset,
             limit,
           });
@@ -1086,8 +1205,15 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
         }
       }
     },
-    [commits.length, rpc, threadId],
+    [commits.length, repositoryKey, rpc, threadId],
   );
+
+  const refreshHistory = useCallback(async () => {
+    const discoveredRepositories = await onRefreshRepositories();
+    if (discoveredRepositories.some((repository) => repository.key === repositoryKey)) {
+      await loadHistory(true);
+    }
+  }, [loadHistory, onRefreshRepositories, repositoryKey]);
 
   useLayoutEffect(() => {
     if (pendingScrollRestore.current === null || !scrollRef.current) return;
@@ -1103,7 +1229,7 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
     setDiffView(null);
     historyRevisionRef.current = null;
     void loadHistory(true);
-  }, [threadId]);
+  }, [repositoryKey, threadId]);
 
   useEffect(() => {
     if (initialLoading) return;
@@ -1125,7 +1251,12 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
       }
 
       try {
-        const result = await rpc.call("historyRevision", { threadId });
+        const discoveredRepositories = await onRefreshRepositories();
+        if (!discoveredRepositories.some((repository) => repository.key === repositoryKey)) {
+          schedule();
+          return;
+        }
+        const result = await rpc.call("historyRevision", { threadId, repositoryKey });
         if (cancelled) return;
         if (result.unavailableReason) {
           schedule();
@@ -1160,7 +1291,7 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
       clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [diffView, initialLoading, loadHistory, rpc, threadId]);
+  }, [diffView, initialLoading, loadHistory, onRefreshRepositories, repositoryKey, rpc, threadId]);
 
   useEffect(() => {
     if (expandedHash && !commits.some((commit) => commit.hash === expandedHash)) {
@@ -1185,6 +1316,20 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
       <div className="git-toolbar">
         <div className="git-repository">
           <strong>History</strong>
+          {repositories.length > 1 && (
+            <label className="git-repository-select">
+              <span className="sr-only">Repository</span>
+              <select
+                aria-label="Repository"
+                value={repositoryKey}
+                onChange={(event) => onSelectRepository(event.target.value)}
+              >
+                {repositories.map((repository) => (
+                  <option key={repository.key} value={repository.key}>{repository.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <span title={`${page?.repoName ?? "Repository"} / ${page?.currentBranch ?? "Detached HEAD"}`}>
             {page?.repoName ?? "Repository"} / {page?.currentBranch ?? "Detached HEAD"}
           </span>
@@ -1197,7 +1342,7 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
             aria-label="Refresh Git history"
             title="Refresh Git history"
             disabled={initialLoading}
-            onClick={() => void loadHistory(true)}
+            onClick={() => void refreshHistory()}
           >
             <Icon
               name={initialLoading ? "Loading" : "ArrowReloadHorizontal"}
@@ -1249,8 +1394,9 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
       )}
 
       {hasHistoryItems && (
-        <CommitList
+          <CommitList
           threadId={threadId}
+          repositoryKey={repositoryKey}
           commits={commits}
           uncommittedFiles={uncommittedFiles}
           uncommittedExpanded={uncommittedExpanded}
@@ -1288,6 +1434,7 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
         <FileDiffPanel
           key={diffView.kind === "commit" ? diffView.commit.hash : "working-tree"}
           threadId={threadId}
+          repositoryKey={repositoryKey}
           source={diffView.kind === "commit"
             ? {
               kind: "commit",
