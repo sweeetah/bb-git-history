@@ -42,6 +42,25 @@ commit graph** in the plugin settings to return to the single history rail.
 The plugin does not run checkout, reset, merge, rebase, or other Git mutations.
 Commits reachable only through reflogs are not part of the main graph.
 
+## Repository selection
+
+Git History discovers repositories from the thread environment using one of two
+exclusive modes:
+
+- When the environment root is itself a Git worktree, it is the only repository
+  shown. The existing single-repository panel is used and no repository selector
+  is displayed.
+- Otherwise, Git History considers only canonical Git worktrees that are
+  immediate children of the environment's `repos/*` directory. Discovery is not
+  recursive: nested repositories, non-Git directories, and paths that resolve
+  outside the environment are not available for selection.
+
+Each discovered repository has an independent history; Git History never merges
+commits, details, or patches from different repositories. When more than one
+repository is available, the selector switches the active repository and scopes
+the commit history, commit details, commit-file patches, and working-tree
+patches to that selection.
+
 ## Development
 
 ```sh

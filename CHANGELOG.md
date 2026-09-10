@@ -2,6 +2,14 @@
 
 All notable changes to Git History are documented here.
 
+## Unreleased
+
+### Added
+
+- Git History now supports selecting an independently scoped repository from
+  canonical immediate `repos/*` worktrees when the thread environment root is
+  not itself a Git worktree.
+
 ## [0.4.0] - 2026-09-05
 
 ### Added
