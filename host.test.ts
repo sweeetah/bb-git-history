@@ -116,6 +116,30 @@ describe("Git history host entry", () => {
     await harness.experimental_dispose();
   });
 
+  it("signals when a repository disappears after it was discovered", async () => {
+    const disappearingRoot = mkdtempSync(join(tmpdir(), "bb-git-history-disappeared-repo-"));
+    const disappearingRepository = join(disappearingRoot, "repos", "api");
+    try {
+      mkdirSync(disappearingRepository, { recursive: true });
+      git(disappearingRepository, "init", "-b", "main");
+      const harness = experimental_createHostEntryHarness(hostEntry);
+
+      await harness.experimental_call("repositories", { environmentPath: disappearingRoot });
+      rmSync(join(disappearingRepository, ".git"), { recursive: true, force: true });
+
+      await expect(
+        harness.experimental_call("details", {
+          environmentPath: disappearingRoot,
+          repositoryKey: "repos/api",
+          hash: mergeHash,
+        }),
+      ).rejects.toThrow("GIT_HISTORY_REPOSITORY_UNAVAILABLE");
+      await harness.experimental_dispose();
+    } finally {
+      rmSync(disappearingRoot, { recursive: true, force: true });
+    }
+  });
+
   it("pages commits reachable from every ref", async () => {
     const harness = experimental_createHostEntryHarness(hostEntry);
     const first = await harness.experimental_call("history", {

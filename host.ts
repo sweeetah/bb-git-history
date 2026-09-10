@@ -8,7 +8,10 @@ import type {
   GitFileChange,
   GitRef,
 } from "./contracts";
-import { hostContract } from "./contracts";
+import {
+  hostContract,
+  REPOSITORY_UNAVAILABLE_ERROR_PREFIX,
+} from "./contracts";
 import {
   discoverRepositories,
   resolveRepositorySelection,
@@ -40,6 +43,25 @@ async function runGitOptional(
     return await runGit(cwd, args, signal);
   } catch {
     return null;
+  }
+}
+
+async function resolveSelectedRepository(
+  environmentPath: string,
+  repositoryKey: string | undefined,
+  signal: AbortSignal,
+): Promise<string> {
+  try {
+    return await resolveRepositorySelection(
+      environmentPath,
+      repositoryKey,
+      signal,
+      runGit,
+    );
+  } catch (error) {
+    if (signal.aborted) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${REPOSITORY_UNAVAILABLE_ERROR_PREFIX} ${message}`);
   }
 }
 
@@ -478,11 +500,10 @@ export default experimental_defineHostEntry({
     },
 
     async history({ environmentPath, repositoryKey, offset, limit }, context) {
-      const repoRoot = await resolveRepositorySelection(
+      const repoRoot = await resolveSelectedRepository(
         environmentPath,
         repositoryKey,
         context.signal,
-        runGit,
       );
       const [{ byHash, currentBranch, headHash, revision: refsRevision }, rawHistory, rawCount, workingTree] = await Promise.all([
         readRefs(repoRoot, context.signal),
@@ -530,11 +551,10 @@ export default experimental_defineHostEntry({
     },
 
     async historyRevision({ environmentPath, repositoryKey }, context) {
-      const repoRoot = await resolveRepositorySelection(
+      const repoRoot = await resolveSelectedRepository(
         environmentPath,
         repositoryKey,
         context.signal,
-        runGit,
       );
       return {
         revision: await readHistoryRevision(repoRoot, context.signal),
@@ -543,21 +563,19 @@ export default experimental_defineHostEntry({
     },
 
     async details({ environmentPath, repositoryKey, hash }, context) {
-      const repoRoot = await resolveRepositorySelection(
+      const repoRoot = await resolveSelectedRepository(
         environmentPath,
         repositoryKey,
         context.signal,
-        runGit,
       );
       return readCommitDetails(repoRoot, hash, context.signal);
     },
 
     async patch({ environmentPath, repositoryKey, hash, path }, context) {
-      const repoRoot = await resolveRepositorySelection(
+      const repoRoot = await resolveSelectedRepository(
         environmentPath,
         repositoryKey,
         context.signal,
-        runGit,
       );
       assertObjectName(hash);
       const rawPatch = await runGit(
@@ -584,11 +602,10 @@ export default experimental_defineHostEntry({
     },
 
     async workingPatch({ environmentPath, repositoryKey, path }, context) {
-      const repoRoot = await resolveRepositorySelection(
+      const repoRoot = await resolveSelectedRepository(
         environmentPath,
         repositoryKey,
         context.signal,
-        runGit,
       );
       const { files } = await readWorkingTreeFiles(repoRoot, context.signal);
       if (!files.some((file) => file.path === path)) {

@@ -388,4 +388,125 @@ describe("Git history app", () => {
     });
     panel.lifecycle.unmount();
   });
+
+  it("keeps the selected repository mounted through a transient discovery failure and retries", async () => {
+    let discoveryCalls = 0;
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => {
+            discoveryCalls += 1;
+            if (discoveryCalls === 2) throw new Error("temporary discovery outage");
+            return {
+              repositories: [{ key: "repos/api", name: "API" }],
+              unavailableReason: null,
+            };
+          },
+        },
+      },
+    );
+
+    await panel.findByText("example-repo / main");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(discoveryCalls).toBe(2));
+    expect(panel.getByText("example-repo / main")).toBeTruthy();
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(discoveryCalls).toBe(3));
+    expect(panel.getByText("example-repo / main")).toBeTruthy();
+    panel.lifecycle.unmount();
+  });
+
+  it("rediscovers repositories when commit details report an unavailable selection", async () => {
+    let discoveryCalls = 0;
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({
+            repositories: discoveryCalls++ === 0 ? [{ key: "repos/api", name: "API" }] : [],
+            unavailableReason: null,
+          }),
+          details: async () => {
+            throw new Error("GIT_HISTORY_REPOSITORY_UNAVAILABLE: selected repository disappeared");
+          },
+        },
+      },
+    );
+
+    const commitButton = await panel.findByRole("button", { name: /render commit details/ });
+    fireEvent.click(commitButton);
+
+    await panel.findByText("No Git repositories are available in this environment.");
+    expect(discoveryCalls).toBe(2);
+    panel.lifecycle.unmount();
+  });
+
+  it("rediscovers repositories when an open commit patch reports an unavailable selection", async () => {
+    let discoveryCalls = 0;
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({
+            repositories: discoveryCalls++ === 0 ? [{ key: "repos/api", name: "API" }] : [],
+            unavailableReason: null,
+          }),
+          details: async () => commitDetails,
+          patch: async () => {
+            throw new Error("GIT_HISTORY_REPOSITORY_UNAVAILABLE: selected repository disappeared");
+          },
+        },
+      },
+    );
+
+    const commitButton = await panel.findByRole("button", { name: /render commit details/ });
+    fireEvent.click(commitButton);
+    await panel.findByText("A longer explanation of the change.", { exact: false });
+    fireEvent.click(panel.getByTitle("Open diff for src/example.ts"));
+
+    await panel.findByText("No Git repositories are available in this environment.");
+    expect(discoveryCalls).toBe(2);
+    panel.lifecycle.unmount();
+  });
+
+  it("rediscovers repositories when an open working patch reports an unavailable selection", async () => {
+    let discoveryCalls = 0;
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "thread-1", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({
+            repositories: discoveryCalls++ === 0 ? [{ key: "repos/api", name: "API" }] : [],
+            unavailableReason: null,
+          }),
+          history: async () => historyFor("repos/api"),
+          workingPatch: async () => {
+            throw new Error("GIT_HISTORY_REPOSITORY_UNAVAILABLE: selected repository disappeared");
+          },
+        },
+      },
+    );
+
+    await panel.findByRole("button", { name: /API history/ });
+    fireEvent.click(panel.getByRole("button", { name: /Uncommitted/ }));
+    fireEvent.click(panel.getByTitle("Open uncommitted diff for src/working.ts"));
+
+    await panel.findByText("No Git repositories are available in this environment.");
+    expect(discoveryCalls).toBe(2);
+    panel.lifecycle.unmount();
+  });
 });

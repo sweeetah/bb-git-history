@@ -27,6 +27,7 @@ import type {
   HistoryPage,
   RepositoryDescriptor,
 } from "./contracts";
+import { REPOSITORY_UNAVAILABLE_ERROR_PREFIX } from "./contracts";
 import { layoutCommitGraph, type GraphRow } from "./graph";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -50,6 +51,11 @@ const GRAPH_LANE_ORIGIN = GRAPH_WIDTH / 2;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Git history could not be loaded.";
+}
+
+function isRepositoryUnavailableError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.startsWith(REPOSITORY_UNAVAILABLE_ERROR_PREFIX);
 }
 
 function exactTime(value: string): string {
@@ -415,6 +421,7 @@ function CommitList({
   onOpenDiff,
   onOpenWorkingDiff,
   onToggleUncommitted,
+  onRepositoryUnavailable,
 }: {
   threadId: string;
   repositoryKey: string;
@@ -432,6 +439,7 @@ function CommitList({
   onOpenDiff: (commit: GitCommitSummary, details: CommitDetails, path: string) => void;
   onOpenWorkingDiff: (path: string) => void;
   onToggleUncommitted: () => void;
+  onRepositoryUnavailable: () => void;
 }) {
   const listItems = useMemo(
     () => historyListItems(commits, uncommittedFiles, uncommittedExpanded),
@@ -666,6 +674,7 @@ function CommitList({
                   laneGap={laneGap}
                   laneOffset={laneOffset}
                   onOpenDiff={onOpenDiff}
+                  onRepositoryUnavailable={onRepositoryUnavailable}
                 />
               )}
             </div>
@@ -733,6 +742,7 @@ function InlineCommitFiles({
   laneGap,
   laneOffset,
   onOpenDiff,
+  onRepositoryUnavailable,
 }: {
   id: string;
   threadId: string;
@@ -744,6 +754,7 @@ function InlineCommitFiles({
   laneGap: number;
   laneOffset: number;
   onOpenDiff: (commit: GitCommitSummary, details: CommitDetails, path: string) => void;
+  onRepositoryUnavailable: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [details, setDetails] = useState<CommitDetails | null>(null);
@@ -759,12 +770,18 @@ function InlineCommitFiles({
         if (active) setDetails(result);
       })
       .catch((error: unknown) => {
-        if (active) setDetailsError(errorMessage(error));
+        if (!active) return;
+        if (isRepositoryUnavailableError(error)) {
+          setDetailsError("This repository is no longer available.");
+          onRepositoryUnavailable();
+          return;
+        }
+        setDetailsError(errorMessage(error));
       });
     return () => {
       active = false;
     };
-  }, [commit.hash, repositoryKey, rpc, threadId]);
+  }, [commit.hash, onRepositoryUnavailable, repositoryKey, rpc, threadId]);
 
   const totals = details ? changeTotals(details.files) : null;
   const continuationLanes = graphRow
@@ -876,6 +893,7 @@ function FileDiffPanel({
   files,
   initialPath,
   onBack,
+  onRepositoryUnavailable,
 }: {
   threadId: string;
   repositoryKey: string;
@@ -885,6 +903,7 @@ function FileDiffPanel({
   files: GitFileChange[];
   initialPath: string;
   onBack: () => void;
+  onRepositoryUnavailable: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [path, setPath] = useState(initialPath);
@@ -907,12 +926,18 @@ function FileDiffPanel({
         if (active) setPatch(result);
       })
       .catch((error: unknown) => {
-        if (active) setPatchError(errorMessage(error));
+        if (!active) return;
+        if (isRepositoryUnavailableError(error)) {
+          setPatchError("This repository is no longer available.");
+          onRepositoryUnavailable();
+          return;
+        }
+        setPatchError(errorMessage(error));
       });
     return () => {
       active = false;
     };
-  }, [path, repositoryKey, rpc, source, threadId]);
+  }, [onRepositoryUnavailable, path, repositoryKey, rpc, source, threadId]);
 
   return (
     <div className="git-history-panel git-diff-panel">
@@ -1039,9 +1064,9 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
         return result.repositories;
       } catch (error) {
         if (sequence === discoverySequence.current) {
-          setRepositories([]);
-          setRepositoryKey(null);
-          setDiscoveryError(errorMessage(error));
+          if (!hasDiscoveredRepositories.current) {
+            setDiscoveryError(errorMessage(error));
+          }
         }
         return [];
       } finally {
@@ -1063,6 +1088,10 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
     void refreshRepositories();
   }, [refreshRepositories]);
 
+  const recoverRepository = useCallback(() => {
+    void refreshRepositories();
+  }, [refreshRepositories]);
+
   if (repositoryKey) {
     return (
       <RepositoryHistoryPanel
@@ -1072,6 +1101,7 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
         repositories={repositories}
         onSelectRepository={setRepositoryKey}
         onRefreshRepositories={refreshRepositories}
+        onRepositoryUnavailable={recoverRepository}
       />
     );
   }
@@ -1122,12 +1152,14 @@ function RepositoryHistoryPanel({
   repositories,
   onSelectRepository,
   onRefreshRepositories,
+  onRepositoryUnavailable,
 }: {
   threadId: string;
   repositoryKey: string;
   repositories: RepositoryDescriptor[];
   onSelectRepository: (key: string) => void;
   onRefreshRepositories: () => Promise<RepositoryDescriptor[]>;
+  onRepositoryUnavailable: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const { values: settings } = useSettings();
@@ -1436,6 +1468,7 @@ function RepositoryHistoryPanel({
           onToggleUncommitted={() => {
             setUncommittedExpanded((current) => !current);
           }}
+          onRepositoryUnavailable={onRepositoryUnavailable}
         />
       )}
 
@@ -1462,6 +1495,7 @@ function RepositoryHistoryPanel({
           files={diffView.kind === "commit" ? diffView.details.files : diffView.files}
           initialPath={diffView.path}
           onBack={() => setDiffView(null)}
+          onRepositoryUnavailable={onRepositoryUnavailable}
         />
       )}
     </div>
