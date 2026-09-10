@@ -78,15 +78,33 @@ async function isRepository(
   return (await gitTopLevel(candidate, signal, run)) === candidate;
 }
 
-export async function discoverRepositories(
+type ValidatedRepository = RepositoryDescriptor & { canonicalPath: string };
+
+type RepositoryDiscovery = {
+  environmentRoot: string;
+  repositoriesDirectory: string | undefined;
+  repositories: ValidatedRepository[];
+};
+
+async function discoverValidatedRepositories(
   environmentPath: string,
   signal: AbortSignal,
   run: GitRunner,
-): Promise<RepositoryDescriptor[]> {
+): Promise<RepositoryDiscovery> {
   const environmentRoot = await realpath(environmentPath);
 
   if (await isRepository(environmentRoot, signal, run)) {
-    return [{ key: ".", name: basename(environmentRoot) }];
+    return {
+      environmentRoot,
+      repositoriesDirectory: undefined,
+      repositories: [
+        {
+          key: ".",
+          name: basename(environmentRoot),
+          canonicalPath: environmentRoot,
+        },
+      ],
+    };
   }
 
   let repositoriesDirectory: string;
@@ -95,11 +113,13 @@ export async function discoverRepositories(
     repositoriesDirectory = await realpath(resolve(environmentRoot, "repos"));
     entries = await readdir(repositoriesDirectory, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { environmentRoot, repositoriesDirectory: undefined, repositories: [] };
+    }
     throw error;
   }
 
-  const discovered = new Map<string, RepositoryDescriptor>();
+  const discovered = new Map<string, ValidatedRepository>();
   for (const entry of entries) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 
@@ -110,15 +130,36 @@ export async function discoverRepositories(
       if (!(await isRepository(candidate, signal, run))) continue;
 
       const key = repositoryKey(environmentRoot, candidate);
-      discovered.set(candidate, { key, name: basename(candidate) });
+      discovered.set(candidate, {
+        key,
+        name: basename(candidate),
+        canonicalPath: candidate,
+      });
     } catch (error) {
       if (signal.aborted) throw error;
     }
   }
 
-  return [...discovered.values()].sort((left, right) =>
-    left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
-  );
+  return {
+    environmentRoot,
+    repositoriesDirectory,
+    repositories: [...discovered.values()].sort((left, right) =>
+      left.key < right.key
+        ? -1
+        : left.key > right.key
+          ? 1
+          : 0,
+    ),
+  };
+}
+
+export async function discoverRepositories(
+  environmentPath: string,
+  signal: AbortSignal,
+  run: GitRunner,
+): Promise<RepositoryDescriptor[]> {
+  const discovery = await discoverValidatedRepositories(environmentPath, signal, run);
+  return discovery.repositories.map(({ canonicalPath: _canonicalPath, ...descriptor }) => descriptor);
 }
 
 function isRelativeRepositoryKey(repositoryKey: string): boolean {
@@ -129,29 +170,73 @@ function isRelativeRepositoryKey(repositoryKey: string): boolean {
   );
 }
 
+async function revalidateSelection(
+  environmentPath: string,
+  discovery: RepositoryDiscovery,
+  selected: ValidatedRepository,
+  signal: AbortSignal,
+  run: GitRunner,
+): Promise<string> {
+  try {
+    const environmentRoot = await realpath(environmentPath);
+    if (environmentRoot !== discovery.environmentRoot) {
+      throw new Error("environment changed");
+    }
+
+    const candidate = await realpath(resolve(environmentRoot, selected.key));
+    if (candidate !== selected.canonicalPath || !isInside(environmentRoot, candidate)) {
+      throw new Error("candidate changed");
+    }
+
+    if (discovery.repositoriesDirectory === undefined) {
+      if (candidate !== environmentRoot) throw new Error("root repository changed");
+    } else {
+      const repositoriesDirectory = await realpath(resolve(environmentRoot, "repos"));
+      if (
+        repositoriesDirectory !== discovery.repositoriesDirectory ||
+        dirname(candidate) !== repositoriesDirectory
+      ) {
+        throw new Error("repository directory changed");
+      }
+    }
+
+    if (!(await isRepository(candidate, signal, run))) {
+      throw new Error("repository changed");
+    }
+    return candidate;
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new Error("Invalid repository selection.");
+  }
+}
+
 export async function resolveRepositorySelection(
   environmentPath: string,
   repositoryKey: string | undefined,
   signal: AbortSignal,
   run: GitRunner,
 ): Promise<string> {
-  const repositories = await discoverRepositories(environmentPath, signal, run);
+  const discovery = await discoverValidatedRepositories(environmentPath, signal, run);
+  const { repositories } = discovery;
+  let selected: ValidatedRepository;
 
   if (repositoryKey === undefined) {
     if (repositories.length === 1) {
-      const environmentRoot = await realpath(environmentPath);
-      return realpath(resolve(environmentRoot, repositories[0]!.key));
+      selected = repositories[0]!;
+    } else {
+      throw new Error("Repository selection requires an explicit repository key.");
     }
-    throw new Error("Repository selection requires an explicit repository key.");
+  } else {
+    if (!isRelativeRepositoryKey(repositoryKey)) {
+      throw new Error("Invalid repository selection.");
+    }
+
+    const matchingRepository = repositories.find(
+      (repository) => repository.key === repositoryKey,
+    );
+    if (!matchingRepository) throw new Error("Invalid repository selection.");
+    selected = matchingRepository;
   }
 
-  if (!isRelativeRepositoryKey(repositoryKey)) {
-    throw new Error("Invalid repository selection.");
-  }
-
-  const selected = repositories.find((repository) => repository.key === repositoryKey);
-  if (!selected) throw new Error("Invalid repository selection.");
-
-  const environmentRoot = await realpath(environmentPath);
-  return realpath(resolve(environmentRoot, selected.key));
+  return revalidateSelection(environmentPath, discovery, selected, signal, run);
 }

@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+
 import {
   discoverRepositories,
   resolveRepositorySelection,
@@ -31,6 +32,24 @@ async function createRoot(): Promise<string> {
 async function createRepository(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
   await runGit(path, ["init", "--quiet"], new AbortController().signal);
+}
+
+function runGitWithCandidateSwapOnSecondValidation(
+  candidate: string,
+  outside: string,
+): GitRunner {
+  let candidateValidations = 0;
+  return async (cwd, args, signal) => {
+    if (cwd === candidate && args.join(" ") === "rev-parse --show-toplevel") {
+      candidateValidations += 1;
+      if (candidateValidations === 2) {
+        await rm(candidate, { recursive: true, force: true });
+        await symlink(outside, candidate);
+      }
+    }
+
+    return runGit(cwd, args, signal);
+  };
 }
 
 afterEach(async () => {
@@ -129,5 +148,33 @@ describe("resolveRepositorySelection", () => {
     await expect(
       resolveRepositorySelection(root, undefined, new AbortController().signal, runGit),
     ).resolves.toBe(await realpath(api));
+  });
+
+  it("rejects an explicit selection whose final path escapes after discovery", async () => {
+    const root = await createRoot();
+    const api = join(root, "repos", "api");
+    const outside = await createRoot();
+    await createRepository(api);
+    await createRepository(outside);
+    const swappingRun = runGitWithCandidateSwapOnSecondValidation(await realpath(api), outside);
+
+    await expect(
+      resolveRepositorySelection(root, "repos/api", new AbortController().signal, swappingRun),
+    ).rejects.toThrow(/repository selection/i);
+    expect(await realpath(api)).toBe(await realpath(outside));
+  });
+
+  it("rejects an implicit selection whose final path escapes after discovery", async () => {
+    const root = await createRoot();
+    const api = join(root, "repos", "api");
+    const outside = await createRoot();
+    await createRepository(api);
+    await createRepository(outside);
+    const swappingRun = runGitWithCandidateSwapOnSecondValidation(await realpath(api), outside);
+
+    await expect(
+      resolveRepositorySelection(root, undefined, new AbortController().signal, swappingRun),
+    ).rejects.toThrow(/repository selection/i);
+    expect(await realpath(api)).toBe(await realpath(outside));
   });
 });
