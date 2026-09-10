@@ -65,6 +65,42 @@ async function resolveSelectedRepository(
   }
 }
 
+async function runSelectedRepositoryOperation<T>(
+  environmentPath: string,
+  repositoryKey: string | undefined,
+  signal: AbortSignal,
+  operation: (repositoryRoot: string) => Promise<T>,
+): Promise<T> {
+  const repositoryRoot = await resolveSelectedRepository(
+    environmentPath,
+    repositoryKey,
+    signal,
+  );
+
+  try {
+    return await operation(repositoryRoot);
+  } catch (operationError) {
+    if (signal.aborted) throw operationError;
+
+    try {
+      await resolveRepositorySelection(
+        environmentPath,
+        repositoryKey,
+        signal,
+        runGit,
+      );
+    } catch (availabilityError) {
+      if (signal.aborted) throw operationError;
+      const message = availabilityError instanceof Error
+        ? availabilityError.message
+        : String(availabilityError);
+      throw new Error(`${REPOSITORY_UNAVAILABLE_ERROR_PREFIX} ${message}`);
+    }
+
+    throw operationError;
+  }
+}
+
 function assertObjectName(hash: string): void {
   if (!/^[0-9a-fA-F]{4,64}$/.test(hash)) {
     throw new Error("Git returned an invalid commit hash.");
@@ -563,103 +599,107 @@ export default experimental_defineHostEntry({
     },
 
     async details({ environmentPath, repositoryKey, hash }, context) {
-      const repoRoot = await resolveSelectedRepository(
+      return runSelectedRepositoryOperation(
         environmentPath,
         repositoryKey,
         context.signal,
+        (repoRoot) => readCommitDetails(repoRoot, hash, context.signal),
       );
-      return readCommitDetails(repoRoot, hash, context.signal);
     },
 
     async patch({ environmentPath, repositoryKey, hash, path }, context) {
-      const repoRoot = await resolveSelectedRepository(
+      return runSelectedRepositoryOperation(
         environmentPath,
         repositoryKey,
         context.signal,
+        async (repoRoot) => {
+          assertObjectName(hash);
+          const rawPatch = await runGit(
+            repoRoot,
+            [
+              "show",
+              "--format=",
+              "--no-color",
+              "--no-ext-diff",
+              "--first-parent",
+              "--unified=3",
+              hash,
+              "--",
+              path,
+            ],
+            context.signal,
+          );
+          const truncated = rawPatch.length > MAX_PATCH_CHARS;
+          return {
+            path,
+            patch: truncated ? rawPatch.slice(0, MAX_PATCH_CHARS) : rawPatch,
+            truncated,
+          };
+        },
       );
-      assertObjectName(hash);
-      const rawPatch = await runGit(
-        repoRoot,
-        [
-          "show",
-          "--format=",
-          "--no-color",
-          "--no-ext-diff",
-          "--first-parent",
-          "--unified=3",
-          hash,
-          "--",
-          path,
-        ],
-        context.signal,
-      );
-      const truncated = rawPatch.length > MAX_PATCH_CHARS;
-      return {
-        path,
-        patch: truncated ? rawPatch.slice(0, MAX_PATCH_CHARS) : rawPatch,
-        truncated,
-      };
     },
 
     async workingPatch({ environmentPath, repositoryKey, path }, context) {
-      const repoRoot = await resolveSelectedRepository(
+      return runSelectedRepositoryOperation(
         environmentPath,
         repositoryKey,
         context.signal,
-      );
-      const { files } = await readWorkingTreeFiles(repoRoot, context.signal);
-      if (!files.some((file) => file.path === path)) {
-        throw new Error(`Uncommitted file ${path} was not found.`);
-      }
+        async (repoRoot) => {
+          const { files } = await readWorkingTreeFiles(repoRoot, context.signal);
+          if (!files.some((file) => file.path === path)) {
+            throw new Error(`Uncommitted file ${path} was not found.`);
+          }
 
-      const [headHash, trackedPath] = await Promise.all([
-        runGitOptional(
-          repoRoot,
-          ["rev-parse", "--verify", "HEAD"],
-          context.signal,
-        ),
-        runGitOptional(
-          repoRoot,
-          ["ls-files", "--error-unmatch", "--", path],
-          context.signal,
-        ),
-      ]);
-      const rawPatch = headHash && trackedPath !== null
-        ? await runGit(
-          repoRoot,
-          [
-            "diff",
-            "--no-renames",
-            "--no-color",
-            "--no-ext-diff",
-            "--unified=3",
-            "HEAD",
-            "--",
+          const [headHash, trackedPath] = await Promise.all([
+            runGitOptional(
+              repoRoot,
+              ["rev-parse", "--verify", "HEAD"],
+              context.signal,
+            ),
+            runGitOptional(
+              repoRoot,
+              ["ls-files", "--error-unmatch", "--", path],
+              context.signal,
+            ),
+          ]);
+          const rawPatch = headHash && trackedPath !== null
+            ? await runGit(
+              repoRoot,
+              [
+                "diff",
+                "--no-renames",
+                "--no-color",
+                "--no-ext-diff",
+                "--unified=3",
+                "HEAD",
+                "--",
+                path,
+              ],
+              context.signal,
+            )
+            : await runGit(
+              repoRoot,
+              [
+                "diff",
+                "--no-index",
+                "--no-color",
+                "--no-ext-diff",
+                "--unified=3",
+                "--",
+                "/dev/null",
+                path,
+              ],
+              context.signal,
+              [1],
+            );
+          const truncated = rawPatch.length > MAX_PATCH_CHARS;
+          return {
             path,
-          ],
-          context.signal,
-        )
-        : await runGit(
-          repoRoot,
-          [
-            "diff",
-            "--no-index",
-            "--no-color",
-            "--no-ext-diff",
-            "--unified=3",
-            "--",
-            "/dev/null",
-            path,
-          ],
-          context.signal,
-          [1],
-        );
-      const truncated = rawPatch.length > MAX_PATCH_CHARS;
-      return {
-        path,
-        patch: truncated ? rawPatch.slice(0, MAX_PATCH_CHARS) : rawPatch,
-        truncated,
-      };
+            patch: truncated ? rawPatch.slice(0, MAX_PATCH_CHARS) : rawPatch,
+            truncated,
+          };
+        },
+      );
     },
   },
 });

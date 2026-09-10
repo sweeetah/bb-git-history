@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,6 +11,29 @@ function git(repo: string, ...args: string[]): string {
     cwd: repo,
     encoding: "utf8",
   }).trim();
+}
+
+function createPostSelectionRemovalWorkspace(trigger: "show" | "status") {
+  const root = mkdtempSync(join(tmpdir(), "bb-git-history-post-selection-removal-"));
+  const repository = join(root, "repos", "api");
+  const bin = join(root, "bin");
+  mkdirSync(repository, { recursive: true });
+  git(repository, "init", "-b", "main");
+  git(repository, "config", "user.name", "History Test");
+  git(repository, "config", "user.email", "history@example.com");
+  writeFileSync(join(repository, "README.md"), "base\n");
+  git(repository, "add", "README.md");
+  git(repository, "commit", "-m", "base commit");
+  writeFileSync(join(repository, "working.txt"), "working\n");
+
+  mkdirSync(bin);
+  const gitWrapper = join(bin, "git");
+  writeFileSync(
+    gitWrapper,
+    `#!/bin/sh\ncase " $* " in\n  *" ${trigger} "*) rm -rf "$PWD" ;;\nesac\nexec /usr/bin/git "$@"\n`,
+  );
+  chmodSync(gitWrapper, 0o755);
+  return { root, bin, hash: git(repository, "rev-parse", "HEAD") };
 }
 
 describe("Git history host entry", () => {
@@ -138,6 +161,61 @@ describe("Git history host entry", () => {
     } finally {
       rmSync(disappearingRoot, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["details", "show"],
+    ["patch", "show"],
+    ["workingPatch", "status"],
+  ] as const)("signals when %s loses its repository after selection", async (method, trigger) => {
+    const workspace = createPostSelectionRemovalWorkspace(trigger);
+    const originalPath = process.env.PATH;
+    try {
+      const harness = experimental_createHostEntryHarness(hostEntry);
+      process.env.PATH = `${workspace.bin}:${originalPath}`;
+
+      const call = method === "details"
+        ? harness.experimental_call("details", {
+          environmentPath: workspace.root,
+          repositoryKey: "repos/api",
+          hash: workspace.hash,
+        })
+        : method === "patch"
+          ? harness.experimental_call("patch", {
+            environmentPath: workspace.root,
+            repositoryKey: "repos/api",
+            hash: workspace.hash,
+            path: "README.md",
+          })
+          : harness.experimental_call("workingPatch", {
+            environmentPath: workspace.root,
+            repositoryKey: "repos/api",
+            path: "working.txt",
+          });
+
+      await expect(call).rejects.toThrow("GIT_HISTORY_REPOSITORY_UNAVAILABLE");
+      await harness.experimental_dispose();
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(workspace.root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a Git operation error when the repository remains selected", async () => {
+    const harness = experimental_createHostEntryHarness(hostEntry);
+    const missingHash = "f".repeat(40);
+
+    const failure = await harness.experimental_call("patch", {
+      environmentPath: workspaceRoot,
+      repositoryKey: "repos/web",
+      hash: missingHash,
+      path: "README.md",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain(`bad object ${missingHash}`);
+    expect((failure as Error).message).not.toContain("GIT_HISTORY_REPOSITORY_UNAVAILABLE");
+    await harness.experimental_dispose();
   });
 
   it("pages commits reachable from every ref", async () => {
