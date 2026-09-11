@@ -7,7 +7,7 @@ import {
   type CapturedPluginApp,
 } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginThreadPanelProps } from "@get-bb/plugin-sdk";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { CommitDetails, HistoryPage, RepositoryDescriptor } from "./contracts";
 import type { rpcContract } from "./server";
 
@@ -120,6 +120,10 @@ beforeAll(async () => {
   app = await loadPluginApp(() => import("./app"));
 });
 
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 describe("Git history app", () => {
   it("registers the history panel and opt-in header action", () => {
     expect(app.threadPanelActions.map((action) => action.id)).toEqual(["history"]);
@@ -194,8 +198,8 @@ describe("Git history app", () => {
 
   it("scopes history, details, and patches to the selected repository", async () => {
     const repositories: RepositoryDescriptor[] = [
-      { key: "repos/api", name: "API" },
-      { key: "repos/web", name: "Web" },
+      { key: "repos/api", name: "API", currentBranch: "main", dirtyCount: 0 },
+      { key: "repos/web", name: "Web", currentBranch: "feature/ui", dirtyCount: 1 },
     ];
     const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
       app.threadPanelActions[0]!,
@@ -220,9 +224,11 @@ describe("Git history app", () => {
       },
     );
 
-    const selector = await panel.findByLabelText("Repository");
-    fireEvent.change(selector, { target: { value: "repos/web" } });
-    await panel.findByRole("button", { name: /Web history/ });
+    const webRepository = await panel.findByRole("button", { name: "Show Web history" });
+    expect(panel.getByText("feature/ui")).toBeTruthy();
+    expect(panel.getByText("1 change")).toBeTruthy();
+    fireEvent.click(webRepository);
+    await panel.findByRole("button", { name: /^Web history/ });
     expect(panel.inspection.rpcCalls).toContainEqual({
       method: "history",
       input: {
@@ -233,7 +239,7 @@ describe("Git history app", () => {
       },
     });
 
-    fireEvent.click(panel.getByRole("button", { name: /Web history/ }));
+    fireEvent.click(panel.getByRole("button", { name: /^Web history/ }));
     await panel.findByText("A longer explanation of the change.", { exact: false });
     expect(panel.inspection.rpcCalls).toContainEqual({
       method: "details",
@@ -267,6 +273,74 @@ describe("Git history app", () => {
     panel.lifecycle.unmount();
   });
 
+  it("remembers the selected repository for the thread", async () => {
+    const repositories: RepositoryDescriptor[] = [
+      { key: "repos/api", name: "API", currentBranch: "main", dirtyCount: 0 },
+      { key: "repos/web", name: "Web", currentBranch: "feature/ui", dirtyCount: 0 },
+    ];
+    const options = {
+      settings: {},
+      rpc: {
+        ...rpcHandlers(),
+        repositories: async () => ({ repositories, unavailableReason: null }),
+        history: async ({ repositoryKey }: { repositoryKey?: string }) =>
+          historyFor(repositoryKey ?? "repos/api"),
+      },
+    };
+    const firstPanel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "remembered-thread", params: null },
+      options,
+    );
+
+    fireEvent.click(await firstPanel.findByRole("button", { name: "Show Web history" }));
+    await firstPanel.findByRole("button", { name: /^Web history/ });
+    firstPanel.lifecycle.unmount();
+
+    const reopenedPanel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "remembered-thread", params: null },
+      options,
+    );
+    await reopenedPanel.findByRole("button", { name: /^Web history/ });
+    expect(reopenedPanel.getByRole("button", { name: "Show Web history" })
+      .getAttribute("aria-pressed")).toBe("true");
+    reopenedPanel.lifecycle.unmount();
+  });
+
+  it("filters a constrained repository list when the workspace is large", async () => {
+    const repositories: RepositoryDescriptor[] = Array.from({ length: 12 }, (_, index) => ({
+      key: `repos/service-${index}`,
+      name: `service-${index}`,
+      currentBranch: "main",
+      dirtyCount: index,
+    }));
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "large-thread", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({ repositories, unavailableReason: null }),
+          history: async ({ repositoryKey }: { repositoryKey?: string }) =>
+            historyFor(repositoryKey ?? repositories[0]!.key),
+        },
+      },
+    );
+
+    const search = await panel.findByRole("searchbox", { name: "Search repositories" });
+    fireEvent.change(search, { target: { value: "service-11" } });
+    expect(panel.getByRole("button", { name: "Show service-11 history" })).toBeTruthy();
+    expect(panel.queryByRole("button", { name: "Show service-1 history" })).toBeNull();
+    expect(panel.container.querySelector(".git-repository-list")).not.toBeNull();
+    fireEvent.click(panel.getByRole("button", { name: "Collapse repositories" }));
+    expect(panel.queryByRole("searchbox", { name: "Search repositories" })).toBeNull();
+    fireEvent.click(panel.getByRole("button", { name: "Expand repositories" }));
+    expect(panel.getByRole("searchbox", { name: "Search repositories" })).toBeTruthy();
+    panel.lifecycle.unmount();
+  });
+
   it("does not render a late previous-repository history response after switching", async () => {
     const apiHistory = deferred<HistoryPage>();
     const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
@@ -291,14 +365,13 @@ describe("Git history app", () => {
       },
     );
 
-    const selector = await panel.findByLabelText("Repository");
-    fireEvent.change(selector, { target: { value: "repos/web" } });
-    await panel.findByRole("button", { name: /Web history/ });
+    fireEvent.click(await panel.findByRole("button", { name: "Show Web history" }));
+    await panel.findByRole("button", { name: /^Web history/ });
     apiHistory.resolve(historyFor("repos/api"));
     await Promise.resolve();
 
-    expect(panel.getByRole("button", { name: /Web history/ })).toBeTruthy();
-    expect(panel.queryByRole("button", { name: /API history/ })).toBeNull();
+    expect(panel.getByRole("button", { name: /^Web history/ })).toBeTruthy();
+    expect(panel.queryByRole("button", { name: /^API history/ })).toBeNull();
     panel.lifecycle.unmount();
   });
 
@@ -329,19 +402,17 @@ describe("Git history app", () => {
       },
     );
 
-    const selector = await panel.findByLabelText("Repository");
-    fireEvent.change(selector, { target: { value: "repos/web" } });
-    await panel.findByRole("button", { name: /Web history/ });
+    fireEvent.click(await panel.findByRole("button", { name: "Show Web history" }));
+    await panel.findByRole("button", { name: /^Web history/ });
     const historyCallsBeforeRefresh = panel.inspection.rpcCalls.filter((call) => call.method === "history");
     fireEvent.click(panel.getByRole("button", { name: "Refresh Git history" }));
 
     await panel.findByText("The selected repository is no longer available.");
-    expect(panel.queryByRole("button", { name: /Web history/ })).toBeNull();
+    expect(panel.queryByRole("button", { name: /^Web history/ })).toBeNull();
     expect(panel.inspection.rpcCalls.filter((call) => call.method === "history"))
       .toHaveLength(historyCallsBeforeRefresh.length);
-    const replacementSelector = panel.getByLabelText("Repository");
-    fireEvent.change(replacementSelector, { target: { value: "repos/api" } });
-    await panel.findByRole("button", { name: /API history/ });
+    fireEvent.click(panel.getByRole("button", { name: "Show API history" }));
+    await panel.findByRole("button", { name: /^API history/ });
     panel.lifecycle.unmount();
   });
 
@@ -501,7 +572,7 @@ describe("Git history app", () => {
       },
     );
 
-    await panel.findByRole("button", { name: /API history/ });
+    await panel.findByRole("button", { name: /^API history/ });
     fireEvent.click(panel.getByRole("button", { name: /Uncommitted/ }));
     fireEvent.click(panel.getByTitle("Open uncommitted diff for src/working.ts"));
 

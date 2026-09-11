@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,7 +31,7 @@ async function createRoot(): Promise<string> {
 
 async function createRepository(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
-  await runGit(path, ["init", "--quiet"], new AbortController().signal);
+  await runGit(path, ["init", "--quiet", "--initial-branch", "main"], new AbortController().signal);
 }
 
 function runGitWithCandidateSwapOnSecondValidation(
@@ -64,7 +64,12 @@ describe("discoverRepositories", () => {
 
     const result = await discoverRepositories(root, new AbortController().signal, runGit);
 
-    expect(result).toEqual([{ key: ".", name: basename(root) }]);
+    expect(result).toEqual([{
+      key: ".",
+      name: basename(root),
+      currentBranch: "main",
+      dirtyCount: 1,
+    }]);
     await expect(
       resolveRepositorySelection(root, undefined, new AbortController().signal, runGit),
     ).resolves.toBe(await realpath(root));
@@ -77,6 +82,7 @@ describe("discoverRepositories", () => {
     const outside = await createRoot();
     await createRepository(web);
     await createRepository(api);
+    await writeFile(join(web, "working.txt"), "uncommitted\n");
     await mkdir(join(root, "repos", "plain"), { recursive: true });
     await createRepository(join(root, "repos", "group", "nested"));
     await createRepository(outside);
@@ -85,8 +91,8 @@ describe("discoverRepositories", () => {
     const result = await discoverRepositories(root, new AbortController().signal, runGit);
 
     expect(result).toEqual([
-      { key: "repos/api", name: "api" },
-      { key: "repos/web", name: "web" },
+      { key: "repos/api", name: "api", currentBranch: "main", dirtyCount: 0 },
+      { key: "repos/web", name: "web", currentBranch: "main", dirtyCount: 1 },
     ]);
   });
 

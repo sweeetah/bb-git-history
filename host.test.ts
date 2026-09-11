@@ -119,6 +119,10 @@ describe("Git history host entry", () => {
       "repos/api",
       "repos/web",
     ]);
+    expect(repositories.repositories).toEqual([
+      { key: "repos/api", name: "api", currentBranch: "main", dirtyCount: 0 },
+      { key: "repos/web", name: "web", currentBranch: "main", dirtyCount: 0 },
+    ]);
     expect(history.repoName).toBe("web");
 
     await harness.experimental_dispose();

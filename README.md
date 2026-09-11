@@ -48,7 +48,7 @@ Git History discovers repositories from the thread environment using one of two
 exclusive modes:
 
 - When the environment root is itself a Git worktree, it is the only repository
-  shown. The existing single-repository panel is used and no repository selector
+  shown. The existing single-repository panel is used and no repository navigator
   is displayed.
 - Otherwise, Git History considers only canonical Git worktrees that are
   immediate children of the environment's `repos/*` directory. Discovery is not
@@ -57,9 +57,11 @@ exclusive modes:
 
 Each discovered repository has an independent history; Git History never merges
 commits, details, or patches from different repositories. When more than one
-repository is available, the selector switches the active repository and scopes
-the commit history, commit details, commit-file patches, and working-tree
-patches to that selection.
+repository is available, a collapsible repository navigator shows each branch
+and working-tree status. Selecting a row switches the complete history below and
+scopes commit details, commit-file patches, and working-tree patches to that
+repository. The selection is remembered per thread. Large repository lists are
+height-limited and add name/branch search after eight repositories.
 
 ## Development
 

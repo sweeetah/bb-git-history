@@ -9,6 +9,9 @@ All notable changes to Git History are documented here.
 - Git History now supports selecting an independently scoped repository from
   canonical immediate `repos/*` worktrees when the thread environment root is
   not itself a Git worktree.
+- Multi-repository threads now use a collapsible repository navigator with
+  branch and dirty status, per-thread selection memory, and search for large
+  repository sets.
 
 ## [0.4.0] - 2026-09-05
 

@@ -82,6 +82,8 @@ export const repositoryDescriptorSchema = z
   .object({
     key: z.string().min(1).max(16_384),
     name: z.string().min(1).max(512),
+    currentBranch: z.string().nullable().optional(),
+    dirtyCount: z.number().int().nonnegative().nullable().optional(),
   })
   .strict();
 

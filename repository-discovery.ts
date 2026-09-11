@@ -159,7 +159,41 @@ export async function discoverRepositories(
   run: GitRunner,
 ): Promise<RepositoryDescriptor[]> {
   const discovery = await discoverValidatedRepositories(environmentPath, signal, run);
-  return discovery.repositories.map(({ canonicalPath: _canonicalPath, ...descriptor }) => descriptor);
+  const summaries = new Array<RepositoryDescriptor>(discovery.repositories.length);
+  let nextRepository = 0;
+  const workerCount = Math.min(8, discovery.repositories.length);
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextRepository < discovery.repositories.length) {
+      const index = nextRepository++;
+      const repository = discovery.repositories[index]!;
+      const { canonicalPath, ...descriptor } = repository;
+      try {
+        const status = await run(
+          canonicalPath,
+          ["status", "--porcelain=v2", "--branch", "-z"],
+          signal,
+        );
+        let currentBranch: string | null = null;
+        let dirtyCount = 0;
+        for (const record of status.split("\0")) {
+          if (record.startsWith("# branch.head ")) {
+            const branch = record.slice("# branch.head ".length);
+            currentBranch = branch === "(detached)" ? null : branch;
+          } else if (/^[12u?] /.test(record)) {
+            dirtyCount += 1;
+          }
+        }
+        summaries[index] = { ...descriptor, currentBranch, dirtyCount };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        summaries[index] = { ...descriptor, currentBranch: null, dirtyCount: null };
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return summaries;
 }
 
 function isRelativeRepositoryKey(repositoryKey: string): boolean {

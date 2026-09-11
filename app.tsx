@@ -45,9 +45,29 @@ const UNCOMMITTED_FILE_HEIGHT = 27;
 const GRAPH_WIDTH = 38;
 const GRAPH_MAX_WIDTH = 86;
 const GRAPH_LANE_GAP = 8;
+const REPOSITORY_SEARCH_THRESHOLD = 8;
+const REPOSITORY_STORAGE_PREFIX = "bb-git-history:repository:";
 // Lane 0 sits exactly where the compact rail and its commit marker sit, so a
 // single-lane graph is pixel-identical to the compact history.
 const GRAPH_LANE_ORIGIN = GRAPH_WIDTH / 2;
+
+function rememberedRepository(threadId: string): string | null {
+  try {
+    return window.localStorage.getItem(`${REPOSITORY_STORAGE_PREFIX}${threadId}`);
+  } catch {
+    return null;
+  }
+}
+
+function rememberRepository(threadId: string, repositoryKey: string | null): void {
+  try {
+    const key = `${REPOSITORY_STORAGE_PREFIX}${threadId}`;
+    if (repositoryKey) window.localStorage.setItem(key, repositoryKey);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // Storage can be disabled in an embedded browser; selection still works for this mount.
+  }
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Git history could not be loaded.";
@@ -1026,6 +1046,103 @@ function FileDiffPanel({
   );
 }
 
+function RepositoryNavigator({
+  repositories,
+  selectedKey,
+  onSelect,
+}: {
+  repositories: RepositoryDescriptor[];
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [query, setQuery] = useState("");
+  const selectedRepository = repositories.find((repository) => repository.key === selectedKey);
+  const filteredRepositories = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return repositories;
+    return repositories.filter((repository) =>
+      repository.name.toLocaleLowerCase().includes(normalizedQuery)
+      || repository.currentBranch?.toLocaleLowerCase().includes(normalizedQuery));
+  }, [query, repositories]);
+
+  return (
+    <nav className="git-repository-navigator" aria-label="Repositories">
+      <button
+        type="button"
+        className="git-repository-navigator-header"
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse repositories" : "Expand repositories"}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <Icon name={expanded ? "ChevronDown" : "ChevronRight"} aria-hidden="true" />
+        <strong>Repositories</strong>
+        <span className="git-repository-count">{repositories.length.toLocaleString()}</span>
+        {!expanded && selectedRepository && (
+          <span className="git-repository-collapsed-selection">{selectedRepository.name}</span>
+        )}
+      </button>
+      {expanded && (
+        <>
+          {repositories.length > REPOSITORY_SEARCH_THRESHOLD && (
+            <div className="git-repository-search">
+              <Icon name="Search" aria-hidden="true" />
+              <Input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search repositories"
+                aria-label="Search repositories"
+              />
+            </div>
+          )}
+          <div className="git-repository-list" role="list">
+            {filteredRepositories.map((repository) => {
+              const selected = repository.key === selectedKey;
+              const dirtyCount = repository.dirtyCount;
+              const branch = repository.currentBranch ?? "Detached HEAD";
+              return (
+                <div key={repository.key} role="listitem">
+                  <button
+                    type="button"
+                    className="git-repository-row"
+                    data-selected={selected || undefined}
+                    aria-pressed={selected}
+                    aria-label={`Show ${repository.name} history`}
+                    onClick={() => onSelect(repository.key)}
+                  >
+                    <Icon name="FolderGit" className="git-repository-row-icon" aria-hidden="true" />
+                    <span className="git-repository-row-copy">
+                      <strong title={repository.name}>{repository.name}</strong>
+                      <span title={branch}>
+                        <Icon name="GitBranch" aria-hidden="true" />
+                        {branch}
+                      </span>
+                    </span>
+                    <span
+                      className="git-repository-status"
+                      data-dirty={(typeof dirtyCount === "number" && dirtyCount > 0) || undefined}
+                    >
+                      {dirtyCount === null || dirtyCount === undefined
+                        ? "Status unavailable"
+                        : dirtyCount === 0
+                          ? "Clean"
+                          : `${dirtyCount.toLocaleString()} ${dirtyCount === 1 ? "change" : "changes"}`}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+            {filteredRepositories.length === 0 && (
+              <div className="git-repository-empty">No matching repositories.</div>
+            )}
+          </div>
+        </>
+      )}
+    </nav>
+  );
+}
+
 function GitHistoryPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const [repositories, setRepositories] = useState<RepositoryDescriptor[]>([]);
@@ -1055,10 +1172,16 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
         setRepositories(result.repositories);
         setDiscoveryError(result.unavailableReason);
         setRepositoryKey((current) => {
-          if (isInitialDiscovery) return result.repositories[0]?.key ?? null;
+          if (isInitialDiscovery) {
+            const remembered = rememberedRepository(threadId);
+            return result.repositories.find((repository) => repository.key === remembered)?.key
+              ?? result.repositories[0]?.key
+              ?? null;
+          }
           if (current && result.repositories.some((repository) => repository.key === current)) {
             return current;
           }
+          rememberRepository(threadId, null);
           return null;
         });
         return result.repositories;
@@ -1092,56 +1215,61 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
     void refreshRepositories();
   }, [refreshRepositories]);
 
+  const selectRepository = useCallback((key: string) => {
+    rememberRepository(threadId, key);
+    setRepositoryKey(key);
+  }, [threadId]);
+
+  const repositoryNavigator = (
+    repositories.length > 1
+    || (repositories.length > 0 && repositoryKey === null)
+  ) ? (
+    <RepositoryNavigator
+      repositories={repositories}
+      selectedKey={repositoryKey}
+      onSelect={selectRepository}
+    />
+  ) : null;
+
   if (repositoryKey) {
     return (
-      <RepositoryHistoryPanel
-        key={`${threadId}:${repositoryKey}`}
-        threadId={threadId}
-        repositoryKey={repositoryKey}
-        repositories={repositories}
-        onSelectRepository={setRepositoryKey}
-        onRefreshRepositories={refreshRepositories}
-        onRepositoryUnavailable={recoverRepository}
-      />
+      <div className="git-history-workspace">
+        {repositoryNavigator}
+        <RepositoryHistoryPanel
+          key={`${threadId}:${repositoryKey}`}
+          threadId={threadId}
+          repositoryKey={repositoryKey}
+          onRefreshRepositories={refreshRepositories}
+          onRepositoryUnavailable={recoverRepository}
+        />
+      </div>
     );
   }
 
   return (
-    <div className="git-history-panel">
-      {discoveryLoading ? (
-        <div className="git-state" role="status">
-          <Icon name="Loading" className="animate-spin" />
-          <span>Finding Git repositories</span>
-        </div>
-      ) : (
-        <div className="git-state git-state-error" role="alert">
-          <Icon name="AlertCircle" />
-          <strong>Git history unavailable</strong>
-          <span>{discoveryError
-            ?? (repositories.length > 0
-              ? "The selected repository is no longer available."
-              : "No Git repositories are available in this environment.")}
-          </span>
-          {repositories.length > 0 && (
-            <label className="git-repository-select">
-              <span className="sr-only">Repository</span>
-              <select
-                aria-label="Repository"
-                value=""
-                onChange={(event) => setRepositoryKey(event.target.value)}
-              >
-                <option value="" disabled>Select a repository</option>
-                {repositories.map((repository) => (
-                  <option key={repository.key} value={repository.key}>{repository.name}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          <Button variant="outline" size="sm" onClick={() => void refreshRepositories()}>
-            Try again
-          </Button>
-        </div>
-      )}
+    <div className="git-history-workspace">
+      {repositoryNavigator}
+      <div className="git-history-panel">
+        {discoveryLoading ? (
+          <div className="git-state" role="status">
+            <Icon name="Loading" className="animate-spin" />
+            <span>Finding Git repositories</span>
+          </div>
+        ) : (
+          <div className="git-state git-state-error" role="alert">
+            <Icon name="AlertCircle" />
+            <strong>Git history unavailable</strong>
+            <span>{discoveryError
+              ?? (repositories.length > 0
+                ? "The selected repository is no longer available."
+                : "No Git repositories are available in this environment.")}
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void refreshRepositories()}>
+              Try again
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1149,15 +1277,11 @@ function GitHistoryPanel({ threadId }: { threadId: string }) {
 function RepositoryHistoryPanel({
   threadId,
   repositoryKey,
-  repositories,
-  onSelectRepository,
   onRefreshRepositories,
   onRepositoryUnavailable,
 }: {
   threadId: string;
   repositoryKey: string;
-  repositories: RepositoryDescriptor[];
-  onSelectRepository: (key: string) => void;
   onRefreshRepositories: () => Promise<RepositoryDescriptor[]>;
   onRepositoryUnavailable: () => void;
 }) {
@@ -1365,20 +1489,6 @@ function RepositoryHistoryPanel({
       <div className="git-toolbar">
         <div className="git-repository">
           <strong>History</strong>
-          {repositories.length > 1 && (
-            <label className="git-repository-select">
-              <span className="sr-only">Repository</span>
-              <select
-                aria-label="Repository"
-                value={repositoryKey}
-                onChange={(event) => onSelectRepository(event.target.value)}
-              >
-                {repositories.map((repository) => (
-                  <option key={repository.key} value={repository.key}>{repository.name}</option>
-                ))}
-              </select>
-            </label>
-          )}
           <span title={`${page?.repoName ?? "Repository"} / ${page?.currentBranch ?? "Detached HEAD"}`}>
             {page?.repoName ?? "Repository"} / {page?.currentBranch ?? "Detached HEAD"}
           </span>
