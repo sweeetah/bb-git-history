@@ -1,6 +1,9 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+export const REPOSITORY_UNAVAILABLE_ERROR_PREFIX =
+  "GIT_HISTORY_REPOSITORY_UNAVAILABLE:";
+
 export const gitRefSchema = z
   .object({
     fullName: z.string(),
@@ -75,41 +78,56 @@ export const commitPatchSchema = z
   })
   .strict();
 
-const threadHistoryInputSchema = z
+export const repositoryDescriptorSchema = z
+  .object({
+    key: z.string().min(1).max(16_384),
+    name: z.string().min(1).max(512),
+    currentBranch: z.string().nullable().optional(),
+    dirtyCount: z.number().int().nonnegative().nullable().optional(),
+  })
+  .strict();
+
+export const repositorySelectionSchema = z
+  .object({
+    environmentPath: z.string().min(1).max(16_384),
+    repositoryKey: z.string().min(1).max(16_384).optional(),
+  })
+  .strict();
+
+const threadRepositorySchema = z
   .object({
     threadId: z.string().min(1),
+    repositoryKey: z.string().min(1).max(16_384).optional(),
+  })
+  .strict();
+
+const threadHistoryInputSchema = threadRepositorySchema.extend({
     offset: z.number().int().nonnegative(),
     limit: z.number().int().min(1).max(400),
-  })
-  .strict();
+  });
 
-const threadCommitInputSchema = z
-  .object({
-    threadId: z.string().min(1),
+const threadCommitInputSchema = threadRepositorySchema.extend({
     hash: z.string().min(4).max(128),
-  })
-  .strict();
+  });
 
-const threadWorkingTreeInputSchema = z
-  .object({
-    threadId: z.string().min(1),
+const threadWorkingTreeInputSchema = threadRepositorySchema.extend({
     path: z.string().min(1).max(16_384),
-  })
-  .strict();
-
-const threadInputSchema = z
-  .object({
-    threadId: z.string().min(1),
-  })
-  .strict();
+  });
 
 export const rpcContract = defineRpcContract({
+  repositories: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({
+      repositories: z.array(repositoryDescriptorSchema),
+      unavailableReason: z.string().nullable(),
+    }).strict(),
+  },
   history: {
     input: threadHistoryInputSchema,
     output: historyPageSchema,
   },
   historyRevision: {
-    input: threadInputSchema,
+    input: threadRepositorySchema,
     output: historyRevisionSchema,
   },
   details: {
@@ -126,39 +144,41 @@ export const rpcContract = defineRpcContract({
   },
 });
 
-const hostRepositoryInputSchema = z
-  .object({
-    repoPath: z.string().min(1).max(16_384),
-  })
-  .strict();
-
 export const hostContract = defineRpcContract({
+  repositories: {
+    input: z.object({
+      environmentPath: z.string().min(1).max(16_384),
+    }).strict(),
+    output: z.object({
+      repositories: z.array(repositoryDescriptorSchema),
+    }).strict(),
+  },
   history: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       offset: z.number().int().nonnegative(),
       limit: z.number().int().min(1).max(400),
     }),
     output: historyPageSchema,
   },
   historyRevision: {
-    input: hostRepositoryInputSchema,
+    input: repositorySelectionSchema,
     output: historyRevisionSchema,
   },
   details: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       hash: z.string().min(4).max(128),
     }),
     output: commitDetailsSchema,
   },
   patch: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       hash: z.string().min(4).max(128),
       path: z.string().min(1).max(16_384),
     }),
     output: commitPatchSchema,
   },
   workingPatch: {
-    input: hostRepositoryInputSchema.extend({
+    input: repositorySelectionSchema.extend({
       path: z.string().min(1).max(16_384),
     }),
     output: commitPatchSchema,
@@ -172,3 +192,4 @@ export type HistoryPage = z.infer<typeof historyPageSchema>;
 export type HistoryRevision = z.infer<typeof historyRevisionSchema>;
 export type CommitDetails = z.infer<typeof commitDetailsSchema>;
 export type CommitPatch = z.infer<typeof commitPatchSchema>;
+export type RepositoryDescriptor = z.infer<typeof repositoryDescriptorSchema>;

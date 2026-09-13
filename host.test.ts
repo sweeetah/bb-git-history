@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,13 +13,42 @@ function git(repo: string, ...args: string[]): string {
   }).trim();
 }
 
+function createPostSelectionRemovalWorkspace(trigger: "show" | "status") {
+  const root = mkdtempSync(join(tmpdir(), "bb-git-history-post-selection-removal-"));
+  const repository = join(root, "repos", "api");
+  const bin = join(root, "bin");
+  mkdirSync(repository, { recursive: true });
+  git(repository, "init", "-b", "main");
+  git(repository, "config", "user.name", "History Test");
+  git(repository, "config", "user.email", "history@example.com");
+  writeFileSync(join(repository, "README.md"), "base\n");
+  git(repository, "add", "README.md");
+  git(repository, "commit", "-m", "base commit");
+  writeFileSync(join(repository, "working.txt"), "working\n");
+
+  mkdirSync(bin);
+  const gitWrapper = join(bin, "git");
+  writeFileSync(
+    gitWrapper,
+    `#!/bin/sh\ncase " $* " in\n  *" ${trigger} "*) rm -rf "$PWD" ;;\nesac\nexec /usr/bin/git "$@"\n`,
+  );
+  chmodSync(gitWrapper, 0o755);
+  return { root, bin, hash: git(repository, "rev-parse", "HEAD") };
+}
+
 describe("Git history host entry", () => {
+  let workspaceRoot = "";
   let repo = "";
+  let apiRepo = "";
   let mergeHash = "";
   let checkpointHash = "";
 
   beforeAll(() => {
-    repo = mkdtempSync(join(tmpdir(), "bb-git-history-test-"));
+    workspaceRoot = mkdtempSync(join(tmpdir(), "bb-git-history-test-"));
+    repo = join(workspaceRoot, "repos", "web");
+    apiRepo = join(workspaceRoot, "repos", "api");
+    mkdirSync(repo, { recursive: true });
+    mkdirSync(apiRepo, { recursive: true });
     git(repo, "init", "-b", "main");
     git(repo, "config", "user.name", "History Test");
     git(repo, "config", "user.email", "history@example.com");
@@ -64,21 +93,144 @@ describe("Git history host entry", () => {
     git(repo, "update-ref", "refs/t3/checkpoints/shared", mergeHash);
     git(repo, "checkout", "main");
     git(repo, "branch", "-D", "checkpoint");
+
+    git(apiRepo, "init", "-b", "main");
+    git(apiRepo, "config", "user.name", "History Test");
+    git(apiRepo, "config", "user.email", "history@example.com");
   });
 
   afterAll(() => {
-    if (repo) rmSync(repo, { recursive: true, force: true });
+    if (workspaceRoot) rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it("discovers workspace repositories and routes history by repository key", async () => {
+    const harness = experimental_createHostEntryHarness(hostEntry);
+    const repositories = await harness.experimental_call("repositories", {
+      environmentPath: workspaceRoot,
+    });
+    const history = await harness.experimental_call("history", {
+      environmentPath: workspaceRoot,
+      repositoryKey: "repos/web",
+      offset: 0,
+      limit: 20,
+    });
+
+    expect(repositories.repositories.map((repository) => repository.key)).toEqual([
+      "repos/api",
+      "repos/web",
+    ]);
+    expect(repositories.repositories).toEqual([
+      { key: "repos/api", name: "api", currentBranch: "main", dirtyCount: 0 },
+      { key: "repos/web", name: "web", currentBranch: "main", dirtyCount: 0 },
+    ]);
+    expect(history.repoName).toBe("web");
+
+    await harness.experimental_dispose();
+  });
+
+  it("rejects absolute repository keys at the host boundary", async () => {
+    const harness = experimental_createHostEntryHarness(hostEntry);
+
+    await expect(
+      harness.experimental_call("history", {
+        environmentPath: workspaceRoot,
+        repositoryKey: repo,
+        offset: 0,
+        limit: 20,
+      }),
+    ).rejects.toThrow(/repository selection/i);
+
+    await harness.experimental_dispose();
+  });
+
+  it("signals when a repository disappears after it was discovered", async () => {
+    const disappearingRoot = mkdtempSync(join(tmpdir(), "bb-git-history-disappeared-repo-"));
+    const disappearingRepository = join(disappearingRoot, "repos", "api");
+    try {
+      mkdirSync(disappearingRepository, { recursive: true });
+      git(disappearingRepository, "init", "-b", "main");
+      const harness = experimental_createHostEntryHarness(hostEntry);
+
+      await harness.experimental_call("repositories", { environmentPath: disappearingRoot });
+      rmSync(join(disappearingRepository, ".git"), { recursive: true, force: true });
+
+      await expect(
+        harness.experimental_call("details", {
+          environmentPath: disappearingRoot,
+          repositoryKey: "repos/api",
+          hash: mergeHash,
+        }),
+      ).rejects.toThrow("GIT_HISTORY_REPOSITORY_UNAVAILABLE");
+      await harness.experimental_dispose();
+    } finally {
+      rmSync(disappearingRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["details", "show"],
+    ["patch", "show"],
+    ["workingPatch", "status"],
+  ] as const)("signals when %s loses its repository after selection", async (method, trigger) => {
+    const workspace = createPostSelectionRemovalWorkspace(trigger);
+    const originalPath = process.env.PATH;
+    try {
+      const harness = experimental_createHostEntryHarness(hostEntry);
+      process.env.PATH = `${workspace.bin}:${originalPath}`;
+
+      const call = method === "details"
+        ? harness.experimental_call("details", {
+          environmentPath: workspace.root,
+          repositoryKey: "repos/api",
+          hash: workspace.hash,
+        })
+        : method === "patch"
+          ? harness.experimental_call("patch", {
+            environmentPath: workspace.root,
+            repositoryKey: "repos/api",
+            hash: workspace.hash,
+            path: "README.md",
+          })
+          : harness.experimental_call("workingPatch", {
+            environmentPath: workspace.root,
+            repositoryKey: "repos/api",
+            path: "working.txt",
+          });
+
+      await expect(call).rejects.toThrow("GIT_HISTORY_REPOSITORY_UNAVAILABLE");
+      await harness.experimental_dispose();
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(workspace.root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a Git operation error when the repository remains selected", async () => {
+    const harness = experimental_createHostEntryHarness(hostEntry);
+    const missingHash = "f".repeat(40);
+
+    const failure = await harness.experimental_call("patch", {
+      environmentPath: workspaceRoot,
+      repositoryKey: "repos/web",
+      hash: missingHash,
+      path: "README.md",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain(`bad object ${missingHash}`);
+    expect((failure as Error).message).not.toContain("GIT_HISTORY_REPOSITORY_UNAVAILABLE");
+    await harness.experimental_dispose();
   });
 
   it("pages commits reachable from every ref", async () => {
     const harness = experimental_createHostEntryHarness(hostEntry);
     const first = await harness.experimental_call("history", {
-      repoPath: repo,
+      environmentPath: repo,
       offset: 0,
       limit: 2,
     });
     const all = await harness.experimental_call("history", {
-      repoPath: repo,
+      environmentPath: repo,
       offset: 0,
       limit: 20,
     });
@@ -102,11 +254,11 @@ describe("Git history host entry", () => {
   it("loads first-parent file details and a patch", async () => {
     const harness = experimental_createHostEntryHarness(hostEntry);
     const details = await harness.experimental_call("details", {
-      repoPath: repo,
+      environmentPath: repo,
       hash: mergeHash,
     });
     const patch = await harness.experimental_call("patch", {
-      repoPath: repo,
+      environmentPath: repo,
       hash: mergeHash,
       path: "feature.txt",
     });
@@ -133,16 +285,16 @@ describe("Git history host entry", () => {
 
     const harness = experimental_createHostEntryHarness(hostEntry);
     const history = await harness.experimental_call("history", {
-      repoPath: repo,
+      environmentPath: repo,
       offset: 0,
       limit: 20,
     });
     const patch = await harness.experimental_call("workingPatch", {
-      repoPath: repo,
+      environmentPath: repo,
       path: "README.md",
     });
     const untrackedPatch = await harness.experimental_call("workingPatch", {
-      repoPath: repo,
+      environmentPath: repo,
       path: "untracked.txt",
     });
 
@@ -170,19 +322,19 @@ describe("Git history host entry", () => {
   it("returns a lightweight revision that changes with repeated working-tree edits", async () => {
     const harness = experimental_createHostEntryHarness(hostEntry);
     const clean = await harness.experimental_call("historyRevision", {
-      repoPath: repo,
+      environmentPath: repo,
     });
 
     writeFileSync(join(repo, "poll-refresh.txt"), "poll one\n");
 
     const dirty = await harness.experimental_call("historyRevision", {
-      repoPath: repo,
+      environmentPath: repo,
     });
 
     writeFileSync(join(repo, "poll-refresh.txt"), "poll two\n");
 
     const editedAgain = await harness.experimental_call("historyRevision", {
-      repoPath: repo,
+      environmentPath: repo,
     });
 
     expect(clean.revision).not.toBe(dirty.revision);
@@ -197,13 +349,13 @@ describe("Git history host entry", () => {
   it("changes the revision when a non-HEAD ref changes", async () => {
     const harness = experimental_createHostEntryHarness(hostEntry);
     const before = await harness.experimental_call("historyRevision", {
-      repoPath: repo,
+      environmentPath: repo,
     });
 
     git(repo, "update-ref", "refs/remotes/origin/poll-refresh", checkpointHash);
 
     const after = await harness.experimental_call("historyRevision", {
-      repoPath: repo,
+      environmentPath: repo,
     });
 
     expect(before.revision).not.toBe(after.revision);
@@ -232,7 +384,7 @@ describe("Git history host entry", () => {
 
       const harness = experimental_createHostEntryHarness(hostEntry);
       const history = await harness.experimental_call("history", {
-        repoPath: conflictRepo,
+        environmentPath: conflictRepo,
         offset: 0,
         limit: 20,
       });
