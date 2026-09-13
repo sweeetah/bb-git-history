@@ -341,6 +341,46 @@ describe("Git history app", () => {
     panel.lifecycle.unmount();
   });
 
+  it("keeps an active repository search clearable after the list shrinks", async () => {
+    let repositories: RepositoryDescriptor[] = Array.from({ length: 9 }, (_, index) => ({
+      key: `repos/service-${index}`,
+      name: `service-${index}`,
+      currentBranch: "main",
+      dirtyCount: 0,
+    }));
+    const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
+      app.threadPanelActions[0]!,
+      { threadId: "shrinking-thread", params: null },
+      {
+        settings: {},
+        rpc: {
+          ...rpcHandlers(),
+          repositories: async () => ({ repositories, unavailableReason: null }),
+        },
+      },
+    );
+
+    try {
+      await panel.findByText("example-repo / main");
+      fireEvent.change(panel.getByRole("searchbox", { name: "Search repositories" }), {
+        target: { value: "service-8" },
+      });
+      repositories = repositories.slice(0, 8);
+      fireEvent.click(panel.getByRole("button", { name: "Refresh Git history" }));
+      await panel.findByText("No matching repositories.");
+
+      fireEvent.change(panel.getByRole("searchbox", { name: "Search repositories" }), {
+        target: { value: "" },
+      });
+      expect(panel.queryByRole("searchbox", { name: "Search repositories" })).toBeNull();
+      for (const repository of repositories) {
+        expect(panel.getByRole("button", { name: `Show ${repository.name} history` })).toBeTruthy();
+      }
+    } finally {
+      panel.lifecycle.unmount();
+    }
+  });
+
   it("does not render a late previous-repository history response after switching", async () => {
     const apiHistory = deferred<HistoryPage>();
     const panel = renderSlot<PluginThreadPanelProps, typeof rpcContract>(

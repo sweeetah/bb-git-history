@@ -171,7 +171,7 @@ export async function discoverRepositories(
       try {
         const status = await run(
           canonicalPath,
-          ["status", "--porcelain=v2", "--branch", "-z"],
+          ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
           signal,
         );
         let currentBranch: string | null = null;

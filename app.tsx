@@ -1084,7 +1084,7 @@ function RepositoryNavigator({
       </button>
       {expanded && (
         <>
-          {repositories.length > REPOSITORY_SEARCH_THRESHOLD && (
+          {(repositories.length > REPOSITORY_SEARCH_THRESHOLD || query.length > 0) && (
             <div className="git-repository-search">
               <Icon name="Search" aria-hidden="true" />
               <Input

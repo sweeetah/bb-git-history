@@ -96,6 +96,23 @@ describe("discoverRepositories", () => {
     ]);
   });
 
+  it.each(["normal", "no"])("counts every untracked file with status.showUntrackedFiles=%s", async (setting) => {
+    const root = await createRoot();
+    const repository = join(root, "repos", "api");
+    await createRepository(repository);
+    const signal = new AbortController().signal;
+    await runGit(repository, ["config", "status.showUntrackedFiles", setting], signal);
+    await mkdir(join(repository, "src"));
+    await writeFile(join(repository, "src", "a.ts"), "a\n");
+    await writeFile(join(repository, "src", "b.ts"), "b\n");
+
+    const result = await discoverRepositories(root, signal, runGit);
+
+    expect(result).toEqual([
+      { key: "repos/api", name: "api", currentBranch: "main", dirtyCount: 2 },
+    ]);
+  });
+
   it("rejects inward symlinks whose canonical repositories are not immediate repos children", async () => {
     const root = await createRoot();
     const hiddenRepository = join(root, "hidden-repo");
