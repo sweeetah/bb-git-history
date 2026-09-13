@@ -11,7 +11,7 @@ remote-tracking branches, tags, stashes, and shared worktree history.
 Install the latest compatible release from GitHub:
 
 ```sh
-bb plugin install git:https://github.com/yusuf8834/bb-git-history.git@^0.3.0
+bb plugin install git:https://github.com/yusuf8834/bb-git-history.git@^0.4.1
 ```
 
 For local development:

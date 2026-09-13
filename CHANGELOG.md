@@ -2,7 +2,7 @@
 
 All notable changes to Git History are documented here.
 
-## Unreleased
+## [0.4.1] - 2026-09-12
 
 ### Added
 
@@ -12,6 +12,13 @@ All notable changes to Git History are documented here.
 - Multi-repository threads now use a collapsible repository navigator with
   branch and dirty status, per-thread selection memory, and search for large
   repository sets.
+
+### Fixed
+
+- Repository search remains available to clear an active filter when the
+  repository list shrinks below the search threshold.
+- Repository status counts every untracked file, including when Git is configured
+  to hide untracked files.
 
 ## [0.4.0] - 2026-09-05
 
