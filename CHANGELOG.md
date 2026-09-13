@@ -20,6 +20,24 @@ All notable changes to Git History are documented here.
 - Repository status counts every untracked file, including when Git is configured
   to hide untracked files.
 
+### Expected folder structure
+
+Multi-repository discovery requires a directory named `repos` directly under the
+thread environment root, with each repository immediately inside it:
+
+```text
+workspace/
+  repos/
+    project-a/
+      .git
+    project-b/
+      .git
+```
+
+The `.git` entry may be a directory or a worktree's `.git` file. Repositories at
+`workspace/project-a/` or `workspace/repos/group/project-a/` are not discovered.
+If `workspace/` is itself a Git worktree, only that root repository is shown.
+
 ## [0.4.0] - 2026-09-05
 
 ### Added

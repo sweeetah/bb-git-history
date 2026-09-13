@@ -51,9 +51,25 @@ exclusive modes:
   shown. The existing single-repository panel is used and no repository navigator
   is displayed.
 - Otherwise, Git History considers only canonical Git worktrees that are
-  immediate children of the environment's `repos/*` directory. Discovery is not
+  immediate children of the environment's `repos/` directory. Discovery is not
   recursive: nested repositories, non-Git directories, and paths that resolve
   outside the environment are not available for selection.
+
+For multiple repositories, the expected folder structure is:
+
+```text
+workspace/                 # Thread environment root, without its own .git
+  repos/                   # This directory must be named repos
+    project-a/
+      .git
+    project-b/
+      .git
+```
+
+The `.git` entry may be a directory or a worktree's `.git` file. Repositories
+directly under `workspace/`, such as `workspace/project-a/`, and deeper paths,
+such as `workspace/repos/group/project-a/`, are not discovered. If `workspace/`
+is itself a Git worktree, only that root repository is shown.
 
 Each discovered repository has an independent history; Git History never merges
 commits, details, or patches from different repositories. When more than one
