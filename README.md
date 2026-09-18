@@ -1,5 +1,7 @@
 # Git History for bb
 
+> This is a fork of [bb-git-history](https://github.com/yusuf8834/bb-git-history) by [yusuf8834](https://github.com/yusuf8834). All credit for the original plugin goes to them; this fork only adds a devDependency version bump of `@get-bb/plugin-sdk` from `0.4.47` to `0.4.87` in `package.json`/`package-lock.json`.
+
 Git History adds a compact, read-only commit graph to a thread's right panel.
 It reads repository refs, so the graph includes local branches,
 remote-tracking branches, tags, stashes, and shared worktree history.
